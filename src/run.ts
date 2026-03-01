@@ -4,7 +4,11 @@ import { runCliMode } from './cli-mode.js';
 import { commandExists } from './platform/index.js';
 import * as output from './util/output.js';
 
-export async function run(prompt: string): Promise<void> {
+export interface RunOptions {
+  voice?: boolean;
+}
+
+export async function run(prompt: string, options: RunOptions = {}): Promise<void> {
   const config = await loadConfig();
 
   // Auto-detect auth mode
@@ -30,7 +34,7 @@ export async function run(prompt: string): Promise<void> {
   try {
     if (config.authMode === 'oauth') {
       // CLI mode handles its own interactive loop and output
-      await runCliMode(prompt, config);
+      await runCliMode(prompt, config, { voice: options.voice });
     } else {
       const result = await runSdkMode(prompt, config);
       if (result.text) {

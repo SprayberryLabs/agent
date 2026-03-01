@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline';
+import chalk from 'chalk';
 import * as output from './util/output.js';
 import type { AgentConfig } from './util/config.js';
+import { VoiceInput } from './voice/index.js';
 
 interface RunResult {
   text: string;
@@ -15,10 +17,19 @@ interface RunResult {
   turns: number;
 }
 
-export async function runCliMode(prompt: string, config: AgentConfig): Promise<RunResult> {
+export interface CliModeOptions {
+  voice?: boolean | undefined;
+}
+
+export async function runCliMode(prompt: string, config: AgentConfig, options: CliModeOptions = {}): Promise<RunResult> {
   output.header('AskAlf Agent — Computer Control');
   output.info('Using Claude subscription (no per-token costs)');
+  if (options.voice) {
+    output.info('Voice mode enabled — speak your commands');
+  }
   output.info('Type "exit" or Ctrl+C to quit\n');
+
+  const voiceInput = options.voice ? new VoiceInput(config.voice) : null;
 
   // Write MCP config pointing to our stdio server
   const mcpConfigPath = join(tmpdir(), `askalf-mcp-${randomBytes(4).toString('hex')}.json`);
@@ -58,11 +69,26 @@ export async function runCliMode(prompt: string, config: AgentConfig): Promise<R
       output.info(`(${result.turns} turns)\n`);
 
       // Prompt for next task
-      const next = await new Promise<string>((res) => {
-        rl.question('\x1b[36m❯ What next?\x1b[0m ', (answer) => {
-          res(answer.trim());
+      let next: string;
+      if (voiceInput) {
+        console.log('\x1b[36m❯ What next?\x1b[0m');
+        try {
+          next = await voiceInput.listen();
+        } catch {
+          output.warn('Voice input failed, falling back to keyboard');
+          next = await new Promise<string>((res) => {
+            rl.question('\x1b[36m❯ What next? (keyboard)\x1b[0m ', (answer) => {
+              res(answer.trim());
+            });
+          });
+        }
+      } else {
+        next = await new Promise<string>((res) => {
+          rl.question('\x1b[36m❯ What next?\x1b[0m ', (answer) => {
+            res(answer.trim());
+          });
         });
-      });
+      }
 
       if (!next || next.toLowerCase() === 'exit' || next.toLowerCase() === 'quit') {
         output.info('Session ended.');
@@ -89,6 +115,33 @@ export async function runCliMode(prompt: string, config: AgentConfig): Promise<R
     outputTokens: 0,
     costUsd: 0,
     turns: totalTurns,
+  };
+}
+
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+function createSpinner(label: string) {
+  let frame = 0;
+  let currentLabel = label;
+  let elapsed = 0;
+  const startTime = Date.now();
+
+  const interval = setInterval(() => {
+    elapsed = Math.floor((Date.now() - startTime) / 1000);
+    const spinner = chalk.cyan(SPINNER_FRAMES[frame % SPINNER_FRAMES.length]);
+    const time = chalk.dim(`${elapsed}s`);
+    process.stderr.write(`\r${spinner} ${chalk.white(currentLabel)} ${time}  `);
+    frame++;
+  }, 80);
+
+  return {
+    update(newLabel: string) {
+      currentLabel = newLabel;
+    },
+    stop() {
+      clearInterval(interval);
+      process.stderr.write('\r' + ' '.repeat(80) + '\r'); // clear line
+    },
   };
 }
 
@@ -121,7 +174,9 @@ function spawnClaude(prompt: string, config: AgentConfig, mcpConfigPath: string)
       },
     });
 
+    const spinner = createSpinner('Thinking...');
     let stdout = '';
+    let actionCount = 0;
 
     child.stdout.on('data', (data: Buffer) => {
       stdout += data.toString();
@@ -133,15 +188,33 @@ function spawnClaude(prompt: string, config: AgentConfig, mcpConfigPath: string)
       for (const segment of line.split('\n')) {
         const s = segment.trim();
         if (!s) continue;
+
+        // Detect tool use and update spinner with action context
+        if (s.includes('tool_use') || s.includes('askalf-computer')) {
+          actionCount++;
+          if (s.includes('screenshot')) {
+            spinner.update('Taking screenshot...');
+          } else if (s.includes('Bash') || s.includes('bash') || s.includes('powershell')) {
+            spinner.update('Running command...');
+          } else {
+            spinner.update(`Working... (action ${actionCount})`);
+          }
+        }
+
+        // Show meaningful actions on their own line
         if (s.includes('screenshot') || s.includes('mouse') || s.includes('keyboard') ||
             s.includes('click') || s.includes('type') || s.includes('scroll') ||
             s.includes('tool_use') || s.includes('askalf-computer')) {
+          spinner.stop();
           output.action('→', s.length > 120 ? s.slice(0, 120) + '...' : s);
+          spinner.update(`Working... (action ${actionCount})`);
         }
       }
     });
 
     child.on('close', (code) => {
+      spinner.stop();
+
       if (code !== 0 && !stdout) {
         reject(new Error(`Claude exited with code ${code}`));
         return;
@@ -168,6 +241,7 @@ function spawnClaude(prompt: string, config: AgentConfig, mcpConfigPath: string)
     });
 
     child.on('error', (err) => {
+      spinner.stop();
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         reject(new Error(
           'Claude CLI not found. Install: npm i -g @anthropic-ai/claude-code\n' +
