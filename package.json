@@ -1,36 +1,64 @@
 {
   "name": "@askalf/agent",
-  "version": "2.0.0",
-  "description": "AskAlf Agent CLI — Connect any device to your AskAlf team",
+  "version": "2.0.1",
+  "description": "Connect any device to your AskAlf team. Multi-executor (Claude CLI, Codex, bash, PowerShell), AES-256-GCM encryption, task queue, audit logging, security policy engine.",
   "type": "module",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
     "askalf-agent": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
-    "dev": "tsx src/cli.ts"
+    "dev": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "keywords": [
     "askalf",
     "agent",
-    "cli",
     "ai",
-    "autonomous",
+    "ai-agent",
     "ai-workforce",
+    "autonomous",
+    "automation",
+    "claude",
+    "cli",
+    "codex",
+    "computer-use",
+    "device-bridge",
+    "encryption",
+    "mcp",
+    "openai",
+    "orchestration",
+    "security",
     "self-hosted",
-    "websocket"
+    "task-queue",
+    "typescript",
+    "websocket",
+    "workforce"
   ],
+  "author": {
+    "name": "AskAlf",
+    "url": "https://askalf.org"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/askalf/agent.git"
+    "url": "git+https://github.com/askalf/agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/askalf/agent/issues"
   },
   "homepage": "https://askalf.org",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
     "ws": "^8.16.0"
   },
