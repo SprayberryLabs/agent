@@ -1,10 +1,10 @@
 # @askalf/agent
 
-**Connect any device to your AskAlf fleet.**
+**Connect any device to your AskAlf team.**
 
-WebSocket bridge that registers your machine as a device in the AskAlf platform. Once connected, Alf's specialist workers can dispatch tasks to your device — executed via Claude CLI with full codebase access.
+WebSocket bridge that registers your machine as a device in the AskAlf platform. Once connected, Alf can dispatch tasks to your device — executed via Claude CLI with full project access.
 
-Part of [AskAlf](https://askalf.org) — the self-hosted autonomous AI agent fleet platform with multi-agent orchestration, persistent memory, 16 communication channels, and a 28-package marketplace.
+Part of [AskAlf](https://askalf.org) — the self-hosted AI workforce platform. 109 templates, 16 categories, community skills library. Tell Alf what you need, Alf builds the team.
 
 ## Install
 
@@ -21,7 +21,7 @@ curl -fsSL https://get.askalf.org | bash
 ## Quick Start
 
 ```bash
-# Connect this device to your fleet
+# Connect this device to your team
 askalf-agent connect <your-api-key>
 
 # Connect to a self-hosted instance
@@ -41,31 +41,31 @@ askalf-agent disconnect
 
 When connected, your device:
 
-1. **Registers** with the AskAlf fleet via WebSocket
+1. **Registers** with AskAlf via WebSocket
 2. **Reports capabilities** — shell, git, docker, node, python, filesystem (auto-detected)
-3. **Receives tasks** dispatched by the Forge orchestrator or unified dispatcher
+3. **Receives tasks** dispatched by Alf or the unified dispatcher
 4. **Executes via Claude CLI** — `claude --print --output-format json`
-5. **Reports results** back to the fleet with token counts, cost, and duration
-6. **Streams progress** — the fleet sees output in real-time via the event bus
+5. **Reports results** back with token counts, cost, and duration
+6. **Streams progress** — the dashboard sees output in real-time
 
-The fleet sees your device in the Devices tab and can route tasks to it based on capabilities. The autonomous brain can also dispatch investigation tickets to devices when fleet agents identify issues.
+Alf sees your device in the Team tab and routes tasks to it based on capabilities. Workers can be dispatched to run on your local machine instead of in the cloud.
 
 ## How It Works
 
 ```
-Your Machine                    AskAlf Fleet
+Your Machine                    AskAlf Platform
 ┌──────────────┐    WSS     ┌──────────────────────┐
 │ askalf-agent  │◄──────────►│  Forge Orchestrator   │
 │              │            │  Unified Dispatcher   │
 │ Claude CLI   │            │  Event Bus (Redis)    │
-│ Your Code    │            │  Brain + Memory       │
+│ Your Project │            │  Memory + Knowledge   │
 │              │            │  26 MCP Tools         │
 └──────────────┘            └──────────────────────┘
                                     │
                             ┌───────┴───────┐
                             │  Dashboard    │
-                            │  Devices Tab  │
-                            │  Fleet View   │
+                            │  Ask Alf      │
+                            │  Team View    │
                             └───────────────┘
 ```
 
@@ -73,7 +73,7 @@ Your Machine                    AskAlf Fleet
 - **Auto-reconnect** on disconnect (5 second backoff)
 - **Task cancellation** via SIGTERM
 - **10 minute timeout** per execution (configurable)
-- **Progress streaming** — the fleet sees output in real-time
+- **Progress streaming** — the dashboard sees output in real-time
 - **API key auth** — Bearer token on WebSocket handshake
 
 ## Requirements
@@ -122,7 +122,7 @@ const bridge = new AgentBridge({
 await bridge.connect();
 
 // The bridge will now:
-// - Register with the fleet
+// - Register with AskAlf
 // - Accept dispatched tasks
 // - Execute via Claude CLI
 // - Report results back
@@ -138,7 +138,6 @@ Runs anywhere Node.js runs — Linux, macOS, Windows, Raspberry Pi, cloud VMs, C
 
 - [AskAlf Platform](https://github.com/askalf/askalf) — the full platform
 - [Wiki](https://github.com/askalf/askalf/wiki) — installation, configuration, FAQ
-- [Architecture Docs](https://github.com/askalf/askalf/blob/main/docs/ARCHITECTURE.md) — system internals
 - [Discord](https://discord.gg/fENVZpdYcX) — community support
 
 ## License
