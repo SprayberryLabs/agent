@@ -11,6 +11,7 @@
 import WebSocket from 'ws';
 import { execSync, spawn, type ChildProcess } from 'child_process';
 import { freemem, totalmem, loadavg } from 'os';
+import { validateInput, requestApproval, sanitizeOutput, logAudit, loadPolicy } from './security.js';
 
 export interface BridgeOptions {
   apiKey: string;
@@ -221,9 +222,35 @@ export class AgentBridge {
   private async executeTask(task: TaskPayload): Promise<void> {
     const executor = task.executor || this.detectBestExecutor(task);
     const ts = new Date().toISOString();
+    const startTime = Date.now();
 
     console.log(`  [${ts}] Task: ${task.agentName} (${task.executionId.slice(0, 12)}...)`);
     console.log(`    Executor: ${executor} | Input: ${task.input.substring(0, 80)}${task.input.length > 80 ? '...' : ''}`);
+
+    // Security: validate input against policy
+    const validation = validateInput(task.input, task.agentName);
+    if (!validation.allowed) {
+      console.error(`    BLOCKED: ${validation.reason}`);
+      this.send('execution:failed', { executionId: task.executionId, error: `Security policy: ${validation.reason}`, executor });
+      logAudit({ timestamp: ts, executionId: task.executionId, agentName: task.agentName, executor, input: task.input, result: 'blocked', error: validation.reason });
+      this.drainQueue();
+      return;
+    }
+
+    // Security: approval gate
+    const approved = await requestApproval(task.executionId, task.agentName, task.input);
+    if (!approved) {
+      this.send('execution:failed', { executionId: task.executionId, error: 'Execution denied by operator', executor });
+      logAudit({ timestamp: ts, executionId: task.executionId, agentName: task.agentName, executor, input: task.input, result: 'denied' });
+      this.drainQueue();
+      return;
+    }
+
+    // Enforce max timeout from policy
+    const maxTimeout = loadPolicy().maxTimeoutMs;
+    if (task.timeoutMs && task.timeoutMs > maxTimeout) {
+      task.timeoutMs = maxTimeout;
+    }
 
     this.send('execution:accepted', { executionId: task.executionId, executor });
 
@@ -244,20 +271,27 @@ export class AgentBridge {
           throw new Error(`Unknown executor: ${executor}`);
       }
 
+      // Security: sanitize output before sending back
+      const cleanOutput = sanitizeOutput(result.output);
+      const durationMs = Date.now() - startTime;
+
       this.send('execution:complete', {
         executionId: task.executionId,
-        output: result.output,
+        output: cleanOutput,
         tokensIn: result.tokensIn,
         tokensOut: result.tokensOut,
         cost: result.cost,
         executor,
-        durationMs: Date.now() - (this.activeExecutions.get(task.executionId)?.startedAt ?? Date.now()),
+        durationMs,
       });
 
-      console.log(`    Done: $${result.cost.toFixed(4)} | ${result.tokensIn + result.tokensOut} tokens`);
+      logAudit({ timestamp: ts, executionId: task.executionId, agentName: task.agentName, executor, input: task.input, result: 'success', durationMs, cost: result.cost });
+      console.log(`    Done: $${result.cost.toFixed(4)} | ${result.tokensIn + result.tokensOut} tokens | ${(durationMs / 1000).toFixed(1)}s`);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
+      const durationMs = Date.now() - startTime;
       this.send('execution:failed', { executionId: task.executionId, error: errorMsg, executor });
+      logAudit({ timestamp: ts, executionId: task.executionId, agentName: task.agentName, executor, input: task.input, result: 'failed', durationMs, error: errorMsg });
       console.error(`    Failed: ${errorMsg}`);
     } finally {
       this.activeExecutions.delete(task.executionId);

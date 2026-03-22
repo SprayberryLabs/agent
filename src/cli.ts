@@ -224,6 +224,39 @@ function getFlag(flag: string): string | undefined {
   return idx >= 0 ? args[idx + 1] : undefined;
 }
 
+// Import security for audit/policy commands
+async function showAudit(limit: number): Promise<void> {
+  const { readAuditLog } = await import('./security.js');
+  const entries = readAuditLog(limit);
+  if (entries.length === 0) {
+    console.log('No audit entries.');
+    return;
+  }
+  console.log(`\n  Last ${entries.length} executions:\n`);
+  for (const e of entries) {
+    const icon = e.result === 'success' ? '\u2713' : e.result === 'denied' ? '\u2717' : e.result === 'blocked' ? '\u26D4' : '\u2717';
+    const cost = e.cost ? ` $${e.cost.toFixed(4)}` : '';
+    const dur = e.durationMs ? ` ${(e.durationMs / 1000).toFixed(1)}s` : '';
+    console.log(`  ${icon} ${e.timestamp.slice(0, 19)} | ${e.agentName.padEnd(20)} | ${e.executor.padEnd(6)} | ${e.result}${cost}${dur}`);
+    if (e.error) console.log(`    Error: ${e.error.substring(0, 100)}`);
+  }
+  console.log();
+}
+
+async function showPolicy(): Promise<void> {
+  const { loadPolicy } = await import('./security.js');
+  const p = loadPolicy();
+  console.log('\n  Security Policy:\n');
+  console.log(`  Require approval:  ${p.requireApproval ? 'YES' : 'no'}`);
+  console.log(`  Trusted agents:    ${p.trustedAgents.length > 0 ? p.trustedAgents.join(', ') : 'none'}`);
+  console.log(`  Blocked patterns:  ${p.blockedPatterns.length}`);
+  console.log(`  Allowed paths:     ${p.allowedPaths.length > 0 ? p.allowedPaths.join(', ') : 'unrestricted'}`);
+  console.log(`  Max timeout:       ${(p.maxTimeoutMs / 60000).toFixed(0)} minutes`);
+  console.log(`  Sanitize output:   ${p.sanitizeOutput ? 'YES' : 'no'}`);
+  console.log(`  Audit logging:     ${p.auditLog ? 'YES' : 'no'}`);
+  console.log(`\n  Edit: ${join(homedir(), '.askalf', 'policy.json')}\n`);
+}
+
 switch (command) {
   case 'connect': {
     const apiKey = args[1];
@@ -252,6 +285,12 @@ switch (command) {
   case 'stop':
     disconnect();
     break;
+  case 'audit':
+    showAudit(getFlag('--limit') ? parseInt(getFlag('--limit')!) : 50);
+    break;
+  case 'policy':
+    showPolicy();
+    break;
   default:
     console.log(`
   AskAlf Agent v${VERSION}
@@ -263,6 +302,8 @@ switch (command) {
     daemon               Run as background service
     status               Check connection and device info
     disconnect           Stop the agent
+    audit                View execution audit log
+    policy               View security policy
 
   Options:
     --url <url>          Server URL (default: wss://askalf.org)
