@@ -31,6 +31,10 @@ export interface BridgeOptions {
   reconnectBaseMs?: number;
   reconnectMaxMs?: number;
   heartbeatIntervalMs?: number;
+  /** TLS certificate fingerprint for pinning (SHA-256 hex). If set, rejects connections to servers with different certs. */
+  tlsPinSha256?: string;
+  /** Reject self-signed certificates (default: true in production) */
+  rejectUnauthorized?: boolean;
 }
 
 interface ServerMessage {
@@ -58,7 +62,7 @@ interface ActiveExecution {
 
 export class AgentBridge {
   private ws: WebSocket | null = null;
-  private options: Required<Omit<BridgeOptions, 'systemInfo'>> & { systemInfo?: BridgeOptions['systemInfo'] };
+  private options: Required<Omit<BridgeOptions, 'systemInfo' | 'tlsPinSha256' | 'rejectUnauthorized'>> & { systemInfo?: BridgeOptions['systemInfo']; tlsPinSha256?: string; rejectUnauthorized?: boolean };
   private deviceId: string | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -91,7 +95,25 @@ export class AgentBridge {
           'X-Device-Name': this.options.deviceName,
         },
         handshakeTimeout: 15_000,
+        rejectUnauthorized: this.options.rejectUnauthorized !== false,
       });
+
+      // TLS certificate pinning
+      if (this.options.tlsPinSha256) {
+        const expectedPin = this.options.tlsPinSha256.toLowerCase();
+        this.ws.on('upgrade', (response) => {
+          const socket = response.socket as import('tls').TLSSocket;
+          if (socket.getPeerCertificate) {
+            const cert = socket.getPeerCertificate();
+            const fingerprint = cert.fingerprint256?.replace(/:/g, '').toLowerCase();
+            if (fingerprint && fingerprint !== expectedPin) {
+              console.error(`  TLS PIN MISMATCH — expected ${expectedPin.slice(0, 16)}..., got ${fingerprint.slice(0, 16)}...`);
+              this.ws?.close(1002, 'Certificate pinning failed');
+              this.shouldReconnect = false;
+            }
+          }
+        });
+      }
 
       this.ws.on('open', () => {
         this.reconnectAttempt = 0;

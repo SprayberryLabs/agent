@@ -12,6 +12,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { createInterface } from 'readline';
+import { encryptAuditField, decryptAuditField } from './crypto.js';
 
 const CONFIG_DIR = join(homedir(), '.askalf');
 const AUDIT_LOG = join(CONFIG_DIR, 'audit.log');
@@ -263,7 +264,8 @@ export function logAudit(entry: AuditEntry): void {
 
   const line = JSON.stringify({
     ...entry,
-    input: entry.input.substring(0, 500), // Truncate for log
+    input: encryptAuditField(entry.input.substring(0, 500)),
+    error: entry.error ? encryptAuditField(entry.error) : undefined,
   }) + '\n';
 
   try {
@@ -282,7 +284,14 @@ export function readAuditLog(limit = 50): AuditEntry[] {
     const lines = readFileSync(AUDIT_LOG, 'utf8').trim().split('\n');
     return lines
       .slice(-limit)
-      .map(line => { try { return JSON.parse(line); } catch { return null; } })
+      .map(line => {
+        try {
+          const entry = JSON.parse(line) as AuditEntry;
+          entry.input = decryptAuditField(entry.input);
+          if (entry.error) entry.error = decryptAuditField(entry.error);
+          return entry;
+        } catch { return null; }
+      })
       .filter(Boolean) as AuditEntry[];
   } catch {
     return [];

@@ -10,6 +10,7 @@ import { join } from 'path';
 import { homedir, hostname, platform, type, release, cpus, totalmem, freemem } from 'os';
 import { execSync, spawn } from 'child_process';
 import { createRequire } from 'module';
+import { encryptConfig, decryptConfig } from './crypto.js';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version: string };
@@ -31,15 +32,18 @@ interface AgentConfig {
 function loadConfig(): AgentConfig | null {
   if (!existsSync(CONFIG_FILE)) return null;
   try {
-    return JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
-  } catch {
+    const raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
+    return decryptConfig(raw) as unknown as AgentConfig;
+  } catch (err) {
+    console.error(`  Failed to load config: ${err instanceof Error ? err.message : 'unknown'}`);
     return null;
   }
 }
 
 function saveConfig(config: AgentConfig): void {
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
+  const encrypted = encryptConfig(config as unknown as Record<string, unknown>);
+  writeFileSync(CONFIG_FILE, JSON.stringify(encrypted, null, 2), { mode: 0o600 });
 }
 
 function detectCapabilities(): Record<string, boolean> {
