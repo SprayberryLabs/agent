@@ -1,6 +1,6 @@
 {
   "name": "@askalf/agent",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Connect any device to your AskAlf team. Multi-executor (Claude CLI, Codex, bash, PowerShell), AES-256-GCM encryption, task queue, audit logging, security policy engine.",
   "type": "module",
   "main": "dist/index.js",
@@ -56,6 +56,14 @@
     "url": "https://github.com/askalf/agent/issues"
   },
   "homepage": "https://askalf.org",
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/askalf"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "engines": {
     "node": ">=18.0.0"
   },
