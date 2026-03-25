@@ -391,12 +391,12 @@ export class AgentBridge {
 
     // Validate input against security policy before execution
     const validation = validateInput(sanitized, task.agentName || 'shell');
-    if (!validation.safe) {
+    if (!validation.allowed) {
       return Promise.resolve({
-        exitCode: 1,
-        output: `[Security] Command blocked: ${validation.reason}`,
-        error: validation.reason || 'Blocked by security policy',
-        durationMs: 0,
+        output: `[Security] Command blocked: ${validation.reason || 'Blocked by security policy'}`,
+        tokensIn: 0,
+        tokensOut: 0,
+        cost: 0,
       });
     }
 
