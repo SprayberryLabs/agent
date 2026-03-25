@@ -203,10 +203,10 @@ const SECRET_PATTERNS = [
   /Bearer\s+[a-zA-Z0-9_\-.]+/g,
   /token["\s:=]+[a-zA-Z0-9_\-.]{20,}/gi,
 
-  // Passwords in common formats
-  /password["\s:=]+[^\s"',;]{8,}/gi,
-  /passwd["\s:=]+[^\s"',;]{8,}/gi,
-  /secret["\s:=]+[^\s"',;]{8,}/gi,
+  // Passwords in common formats (bounded quantifiers to prevent ReDoS)
+  /password["\s:=]{1,5}[^\s"',;]{8,100}/gi,
+  /passwd["\s:=]{1,5}[^\s"',;]{8,100}/gi,
+  /secret["\s:=]{1,5}[^\s"',;]{8,100}/gi,
 
   // Private keys
   /-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA )?PRIVATE KEY-----/g,
@@ -226,17 +226,32 @@ export function sanitizeOutput(output: string): string {
   const p = loadPolicy();
   if (!p.sanitizeOutput) return output;
 
-  let sanitized = output;
-  for (const pattern of SECRET_PATTERNS) {
-    sanitized = sanitized.replace(pattern, (match) => {
-      // Keep first 4 and last 4 chars, mask the rest
-      if (match.length <= 12) return '[REDACTED]';
-      return match.slice(0, 4) + '[REDACTED]' + match.slice(-4);
-    });
-  }
+  // Limit input length to prevent ReDoS on large outputs
+  const MAX_SANITIZE_LENGTH = 1_000_000;
+  let sanitized = output.length > MAX_SANITIZE_LENGTH
+    ? output.slice(0, MAX_SANITIZE_LENGTH) + '\n[Output truncated for security scanning]'
+    : output;
+
+  // Process line-by-line to prevent polynomial regex backtracking
+  const lines = sanitized.split('\n');
+  const sanitizedLines = lines.map(line => {
+    // Skip very long lines (>10KB) — likely binary/encoded data, not secrets
+    if (line.length > 10_000) return '[Long line redacted]';
+    let s = line;
+    for (const pattern of SECRET_PATTERNS) {
+      // Reset lastIndex for global regex
+      pattern.lastIndex = 0;
+      s = s.replace(pattern, (match) => {
+        if (match.length <= 12) return '[REDACTED]';
+        return match.slice(0, 4) + '[REDACTED]' + match.slice(-4);
+      });
+    }
+    return s;
+  });
+  sanitized = sanitizedLines.join('\n');
 
   // Also check for common env var leaks
-  const envVarPattern = /(?:^|\n)([A-Z_]{2,}(?:_KEY|_SECRET|_TOKEN|_PASSWORD|_CREDENTIALS))=(.+)/gm;
+  const envVarPattern = /^([A-Z_]{2,}(?:_KEY|_SECRET|_TOKEN|_PASSWORD|_CREDENTIALS))=(.+)$/gm;
   sanitized = sanitized.replace(envVarPattern, (_, name: string) => `${name}=[REDACTED]`);
 
   return sanitized;

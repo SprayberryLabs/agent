@@ -389,6 +389,17 @@ export class AgentBridge {
     const sanitized = this.sanitizeInput(task.input);
     const p = loadPolicy();
 
+    // Validate input against security policy before execution
+    const validation = validateInput(sanitized, task.agentName || 'shell');
+    if (!validation.safe) {
+      return Promise.resolve({
+        exitCode: 1,
+        output: `[Security] Command blocked: ${validation.reason}`,
+        error: validation.reason || 'Blocked by security policy',
+        durationMs: 0,
+      });
+    }
+
     // If the input looks like a multi-line script, write to temp and execute
     const isMultiLine = sanitized.includes('\n');
     let shell: string;
