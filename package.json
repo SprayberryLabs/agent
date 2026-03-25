@@ -1,6 +1,6 @@
 {
   "name": "@askalf/agent",
-  "version": "2.0.1",
+  "version": "2.2.0",
   "description": "Connect any device to your AskAlf team. Multi-executor (Claude CLI, Codex, bash, PowerShell), AES-256-GCM encryption, task queue, audit logging, security policy engine.",
   "type": "module",
   "main": "dist/index.js",
