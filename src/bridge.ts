@@ -281,6 +281,7 @@ export class AgentBridge {
     const args = [
       '--print',
       '--output-format', 'json',
+      '--dangerously-skip-permissions',
     ];
 
     if (task.maxTurns) {
