@@ -1,10 +1,10 @@
 # @askalf/agent
 
-**Connect any device to your AskAlf team.**
+**Connect any device to your AskAlf workforce.**
 
-WebSocket bridge that registers your machine as a worker in the AskAlf platform. Alf dispatches tasks to your device — executed via Claude CLI, Codex, or native shell. Works on Linux, macOS, Windows, Raspberry Pi, cloud VMs, CI runners.
+WebSocket bridge that registers your machine as a device in the AskAlf platform. Once connected, Alf's specialist workers can dispatch tasks to your device — executed via Claude CLI with full codebase access. Auto-installs as an OS service so it runs on boot.
 
-Part of [AskAlf](https://askalf.org) — the self-hosted AI workforce platform. 109 templates, 16 categories, community skills library.
+Part of [AskAlf](https://askalf.org) — the self-hosted autonomous AI workforce with 109 worker templates, persistent memory, 16 communication channels, and a community skills library.
 
 ## Install
 
@@ -12,7 +12,7 @@ Part of [AskAlf](https://askalf.org) — the self-hosted AI workforce platform. 
 npm install -g @askalf/agent
 ```
 
-Don't have AskAlf yet?
+Don't have AskAlf yet? Deploy the full platform first:
 
 ```bash
 curl -fsSL https://get.askalf.org | bash
@@ -20,197 +20,176 @@ curl -fsSL https://get.askalf.org | bash
 
 ## Quick Start
 
+**One command to connect + install as service:**
+
 ```bash
-# Connect this device to your team
-askalf-agent connect <your-api-key>
+askalf-agent connect <your-api-key> --url ws://your-server:3005 --name my-device --install
+```
 
-# Connect to a self-hosted instance
-askalf-agent connect <api-key> --url wss://your-server.com
+That's it. Config saved, service installed, runs on boot. Close the terminal — it keeps running.
 
-# Run as a background daemon
+**Or step by step:**
+
+```bash
+# Connect this device to your team (interactive)
+askalf-agent connect <your-api-key> --url ws://your-server:3005
+
+# Install as OS service (auto-start on boot)
+askalf-agent install-service
+
+# Run as background daemon instead
 askalf-agent daemon
 
-# Check status + device capabilities
+# Check connection + service status
 askalf-agent status
 
-# View execution audit log
-askalf-agent audit
-
-# View security policy
-askalf-agent policy
+# Run capabilities scan (no server needed)
+askalf-agent scan
 
 # Stop the agent
 askalf-agent disconnect
+
+# Remove OS service
+askalf-agent uninstall-service
 ```
 
 ## What It Does
 
 When connected, your device:
 
-1. **Registers** with AskAlf via encrypted WebSocket (WSS)
-2. **Reports capabilities** — 26 tools auto-detected (git, docker, node, python, kubectl, terraform, etc.)
-3. **Receives tasks** dispatched by Alf or the unified dispatcher
-4. **Validates input** — security policy checks every task before execution
-5. **Requests approval** — optional interactive approval gate for each task
-6. **Executes** via the best available executor (Claude CLI, Codex, or native shell)
-7. **Sanitizes output** — strips API keys, tokens, and credentials before sending results
-8. **Reports results** with token counts, cost, duration — all logged to encrypted audit trail
+1. **Registers** with the AskAlf platform via WebSocket
+2. **Scans capabilities** — CPU, RAM, 18 tools checked (git, docker, kubectl, python, etc.), Claude CLI detection
+3. **Receives tasks** dispatched by the Forge orchestrator or unified dispatcher
+4. **Executes via Claude CLI** — `claude --print --output-format json`
+5. **Reports results** back to the platform with token counts, cost, and duration
+6. **Streams progress** — the dashboard sees output in real-time via the event bus
 
-## Executors
+The dashboard shows your device in the Devices tab and can route tasks to it based on capabilities.
 
-The agent picks the best executor available on your device:
+## Service Installation
 
-| Priority | Executor | When |
-|----------|----------|------|
-| 1 | **Claude CLI** | AI-powered, full intent understanding, tool use |
-| 2 | **Codex CLI** | AI-powered fallback |
-| 3 | **Shell** | bash/PowerShell/cmd — direct execution with policy guardrails |
+`install-service` auto-detects your OS and creates the right service:
 
-Devices without AI CLIs still work — shell mode executes commands directly with the security policy enforcing safety.
-
-- **Windows**: prefers PowerShell (pwsh), falls back to cmd
-- **Linux/macOS**: prefers bash, falls back to /bin/sh
-
-## Security
-
-### Encryption
-
-| Layer | Protection |
-|-------|-----------|
-| **Config at rest** | AES-256-GCM, machine-derived key (scrypt) |
-| **Audit log** | Task inputs + errors encrypted per-field |
-| **In transit** | WSS (TLS 1.2+), reject self-signed certs |
-| **Certificate pinning** | Optional SHA-256 fingerprint verification |
-| **File permissions** | 0o600 on all sensitive files |
-
-Config files are encrypted with a key derived from your machine's identity — they can't be decrypted on another machine.
-
-### Execution Policy
-
-Configurable via `~/.askalf/policy.json`:
-
-```json
-{
-  "requireApproval": false,
-  "trustedAgents": ["Watchdog", "Monitor"],
-  "blockedPatterns": ["rm -rf /", "DROP TABLE", "..."],
-  "allowedPaths": ["/home/user/projects"],
-  "maxTimeoutMs": 600000,
-  "sanitizeOutput": true,
-  "auditLog": true
-}
-```
-
-- **Approval gate** — require interactive Y/N before each execution (60s timeout)
-- **Trusted agents** — auto-approve known workers
-- **32 blocked patterns** — rm -rf, fork bombs, DROP TABLE, credential theft, remote code execution
-- **Path boundaries** — restrict filesystem access
-- **Output sanitization** — automatically strips API keys, tokens, JWTs, private keys, passwords, connection strings
-
-### Audit Trail
-
-Every execution is logged to `~/.askalf/audit.log` (encrypted):
+| OS | Service Type | Auto-start |
+|----|-------------|------------|
+| **Linux** | systemd unit | On boot |
+| **macOS** | launchd plist | On login |
+| **Windows** | Scheduled Task (or nssm) | On login |
 
 ```bash
-askalf-agent audit --limit 20
+# Install (reads config from ~/.askalf/agent.json)
+askalf-agent install-service
+
+# Or combine connect + install in one command
+askalf-agent connect <key> --url ws://server:3005 --name prod-box --install
+
+# Check status
+askalf-agent status
+
+# Remove
+askalf-agent uninstall-service
 ```
-
-Shows: timestamp, agent name, executor, result (success/failed/denied/blocked), cost, duration.
-
-## Options
-
-```
-askalf-agent connect <api-key> [options]
-
-  --url <url>           Server WebSocket URL (default: wss://askalf.org)
-  --name <name>         Device display name (default: hostname)
-  --concurrent <n>      Max concurrent tasks (default: 2)
-  --timeout <minutes>   Execution timeout (default: 10)
-
-askalf-agent daemon               Run as background service
-askalf-agent status               Device info + capabilities
-askalf-agent audit [--limit N]    View execution audit log
-askalf-agent policy               View security policy
-askalf-agent disconnect           Stop the agent
-askalf-agent --version            Show version
-```
-
-## Capability Detection
-
-The agent auto-detects 26 tools on your device:
-
-**Core**: bash, powershell, git, docker, node, python
-**AI**: claude, codex
-**Network**: curl, wget, ssh, rsync
-**Build**: make, go, rust (cargo), java, dotnet
-**Cloud**: kubectl, terraform, aws, gcloud, az
-**Media**: ffmpeg
-**Data**: jq
-
-Capabilities are reported to AskAlf so Alf knows what your device can handle.
-
-## Task Queue
-
-The agent handles multiple tasks concurrently:
-
-- Default 2 concurrent executions (configurable with `--concurrent`)
-- Overflow tasks queue automatically
-- Queue position reported to server
-- Tasks drain from queue as slots free up
 
 ## How It Works
 
 ```
-Your Device                      AskAlf Platform
-┌───────────────────┐   WSS    ┌──────────────────────┐
-│  askalf-agent      │◄────────►│  Forge Orchestrator   │
-│                   │  (TLS)  │  Unified Dispatcher   │
-│  Security Policy  │         │  Event Bus (Redis)    │
-│  Audit Log        │         │  Memory + Knowledge   │
-│  Crypto Layer     │         │  26 MCP Tools         │
-│                   │         │                      │
-│  Claude/Codex/    │         │  ┌─────────────────┐  │
-│  Shell Executor   │         │  │ Dashboard       │  │
-└───────────────────┘         │  │ Ask Alf · Team  │  │
-                              │  └─────────────────┘  │
-                              └──────────────────────┘
+Your Machine                    AskAlf Platform
+┌──────────────┐    WSS     ┌──────────────────────┐
+│ askalf-agent  │◄──────────►│  Forge Orchestrator   │
+│              │            │  Unified Dispatcher   │
+│ Claude CLI   │            │  Event Bus (Redis)    │
+│ Your Code    │            │  Memory System        │
+│              │            │  44 Forge + 26 MCP    │
+└──────────────┘            └──────────────────────┘
+                                    │
+                            ┌───────┴───────┐
+                            │  Dashboard    │
+                            │  Devices Tab  │
+                            │  Team View    │
+                            └───────────────┘
 ```
+
+- **Heartbeat** every 30 seconds to maintain presence
+- **Auto-reconnect** with exponential backoff (2s → 4s → 8s → max 60s)
+- **Capabilities scan** — responds to server requests with full system info
+- **Task cancellation** via SIGTERM
+- **10 minute timeout** per execution (configurable)
+- **Progress streaming** — the dashboard sees output in real-time
+- **API key auth** — Bearer token on WebSocket handshake
+
+## Requirements
+
+- Node.js 22+ (18+ may work but 22 is recommended)
+- [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) installed (`npm install -g @anthropic-ai/claude-code`)
+- An AskAlf instance running (deploy with `curl -fsSL https://get.askalf.org | bash`)
+
+## Configuration
+
+Config stored in `~/.askalf/agent.json`:
+
+```json
+{
+  "apiKey": "your-forge-api-key",
+  "url": "ws://your-server:3005",
+  "deviceName": "my-laptop"
+}
+```
+
+Get your API key from the AskAlf dashboard at Settings > API Keys, or use the `FORGE_API_KEY` from your `.env` file.
+
+## Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--url <url>` | Server WebSocket URL | `wss://askalf.org` |
+| `--name <name>` | Device display name | System hostname |
+| `--install` | Install as service after connecting | |
+| `--version` | Show version | |
+| `--help` | Show help | |
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `connect <key>` | Connect to fleet (interactive) |
+| `install-service` | Install as OS service (auto-start on boot) |
+| `uninstall-service` | Remove OS service |
+| `daemon` | Run as background daemon |
+| `status` | Check connection + service status |
+| `scan` | Run local capabilities scan |
+| `disconnect` | Stop running daemon |
 
 ## Programmatic Usage
 
 ```typescript
-import { AgentBridge } from '@askalf/agent';
+import { AgentBridge, scanCapabilities } from '@askalf/agent';
 
+// Scan system capabilities
+const caps = scanCapabilities();
+console.log(caps); // { cpu_cores: 8, tools: ['shell', 'git', 'docker', ...], ... }
+
+// Connect programmatically
 const bridge = new AgentBridge({
   apiKey: 'your-api-key',
-  url: 'wss://your-server.com',
-  deviceName: 'prod-01',
-  hostname: 'prod-01.example.com',
-  os: 'Linux 6.1 (linux)',
-  capabilities: { shell: true, docker: true, git: true, node: true },
-  maxConcurrent: 4,
-  executionTimeoutMs: 300_000,
-  tlsPinSha256: 'abc123...',  // optional cert pinning
+  url: 'ws://your-server:3005',
+  deviceName: 'my-server',
+  hostname: 'prod-01',
+  os: 'Linux 6.1',
+  capabilities: caps,
 });
 
 await bridge.connect();
 ```
 
-## Requirements
-
-- Node.js 22+ (18+ may work)
-- An AskAlf instance running
-- Optional: [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) for AI-powered execution
-
 ## Supported Platforms
 
-Runs anywhere Node.js runs — Linux, macOS, Windows, Raspberry Pi, cloud VMs, CI runners, Docker containers.
+Runs anywhere Node.js runs — Linux, macOS, Windows, Raspberry Pi, cloud VMs, CI runners.
 
 ## Related
 
 - [AskAlf Platform](https://github.com/askalf/askalf) — the full platform
+- [Wiki](https://github.com/askalf/askalf/wiki) — installation, configuration, FAQ
 - [Discord](https://discord.gg/fENVZpdYcX) — community support
-- [askalf.org](https://askalf.org) — landing page
 
 ## License
 

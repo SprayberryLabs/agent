@@ -18,7 +18,7 @@ import { join } from 'path';
 import { homedir, hostname, platform, type, release } from 'os';
 import { execSync, spawn } from 'child_process';
 
-const VERSION = '2.3.2';
+const VERSION = '2.4.0';
 const CONFIG_DIR = join(homedir(), '.askalf');
 const CONFIG_FILE = join(CONFIG_DIR, 'agent.json');
 const PID_FILE = join(CONFIG_DIR, 'agent.pid');
@@ -433,14 +433,24 @@ switch (command) {
   case 'connect': {
     const apiKey = args[1];
     if (!apiKey) {
-      console.error('Usage: askalf-agent connect <api-key> [--url wss://askalf.org] [--name my-device]');
+      console.error('Usage: askalf-agent connect <api-key> [--url wss://askalf.org] [--name my-device] [--install]');
       process.exit(1);
     }
     const urlIdx = args.indexOf('--url');
     const url = urlIdx >= 0 ? args[urlIdx + 1]! : 'wss://askalf.org';
     const nameIdx = args.indexOf('--name');
     const deviceName = nameIdx >= 0 ? args[nameIdx + 1] : undefined;
-    connect(apiKey, url, deviceName);
+    const shouldInstall = args.includes('--install');
+    if (shouldInstall) {
+      // Save config then install as service (one-shot setup)
+      const device = getDeviceInfo();
+      const config: AgentConfig = { apiKey, url, deviceName: deviceName || device.hostname };
+      saveConfig(config);
+      console.log(`\n  Config saved. Installing service...`);
+      installService();
+    } else {
+      connect(apiKey, url, deviceName);
+    }
     break;
   }
   case 'daemon':
@@ -490,7 +500,8 @@ switch (command) {
     -h, --help     Show this help
 
   Examples:
-    askalf-agent connect sk-abc123 --url ws://192.168.1.100:3005 --name my-server
+    askalf-agent connect sk-abc123 --url ws://myserver:3005 --name prod-box
+    askalf-agent connect sk-abc123 --url ws://myserver:3005 --name prod-box --install
     askalf-agent install-service      # Runs on boot (Linux/macOS/Windows)
     askalf-agent daemon               # Background process (any OS)
 `);
