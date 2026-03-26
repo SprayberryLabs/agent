@@ -325,7 +325,7 @@ export class AgentBridge {
   ): Promise<{ output: string; tokensIn: number; tokensOut: number; cost: number }> {
     return new Promise((resolve, reject) => {
       const proc = spawn(claudePath, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
+        stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 600_000, // 10 min max
         env: { ...process.env },
         shell: process.platform === 'win32', // Windows needs shell:true for .cmd files
