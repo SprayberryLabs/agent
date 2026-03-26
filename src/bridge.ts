@@ -328,6 +328,7 @@ export class AgentBridge {
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 600_000, // 10 min max
         env: { ...process.env },
+        shell: process.platform === 'win32', // Windows needs shell:true for .cmd files
       });
 
       this.activeExecution = { id: executionId, process: proc };
