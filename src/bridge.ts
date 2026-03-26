@@ -277,9 +277,9 @@ export class AgentBridge {
       return;
     }
 
-    // Build CLI args — use -p flag for prompt to avoid shell quoting issues on Windows
+    // Build CLI args — prompt goes last as positional arg, after -- separator
     const args = [
-      '-p', task.input,
+      '--print',
       '--output-format', 'json',
     ];
 
@@ -289,6 +289,8 @@ export class AgentBridge {
     if (task.maxBudget) {
       args.push('--max-budget-usd', String(task.maxBudget));
     }
+
+    args.push('--', task.input);
 
     try {
       const result = await this.runClaude(claudePath, args, task.executionId);
