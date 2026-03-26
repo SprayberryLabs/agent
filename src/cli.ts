@@ -18,7 +18,7 @@ import { join } from 'path';
 import { homedir, hostname, platform, type, release } from 'os';
 import { execSync, spawn } from 'child_process';
 
-const VERSION = '2.3.1';
+const VERSION = '2.3.2';
 const CONFIG_DIR = join(homedir(), '.askalf');
 const CONFIG_FILE = join(CONFIG_DIR, 'agent.json');
 const PID_FILE = join(CONFIG_DIR, 'agent.pid');
@@ -356,12 +356,17 @@ function installWindowsService(nodePath: string, agentPath: string, config: Agen
   // Fallback: create a .bat wrapper that schtasks can invoke cleanly
   mkdirSync(CONFIG_DIR, { recursive: true });
   const batPath = join(CONFIG_DIR, 'agent-service.bat');
-  const batContent = `@echo off\r\n"${nodePath}" ${args.map(a => `"${a}"`).join(' ')}\r\n`;
-  writeFileSync(batPath, batContent);
+  const batLines = [
+    '@echo off',
+    `"${nodePath}" ${args.map(a => '"' + a + '"').join(' ')}`,
+  ];
+  writeFileSync(batPath, batLines.join('\r\n') + '\r\n');
 
   try {
+    // schtasks /tr requires the path in escaped quotes
+    const trArg = '"' + batPath + '"';
     execSync(
-      `schtasks /create /tn "${SERVICE_NAME}" /tr "\\"${batPath}\\"" /sc onlogon /rl highest /f`,
+      `schtasks /create /tn "${SERVICE_NAME}" /tr ${trArg} /sc onlogon /rl highest /f`,
       { stdio: 'inherit' },
     );
     // Also start it now
