@@ -1,78 +1,49 @@
 {
   "name": "@askalf/agent",
-  "version": "2.2.3",
-  "description": "Connect any device to your AskAlf team. Multi-executor (Claude CLI, Codex, bash, PowerShell), AES-256-GCM encryption, task queue, audit logging, security policy engine.",
+  "version": "2.3.0",
+  "description": "AskAlf Agent — Connect any device to your AskAlf workforce. Multi-executor (Claude, Codex, shell), AES-256-GCM encryption, audit logging, security policy engine.",
   "type": "module",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "types": "./dist/index.d.ts",
   "bin": {
     "askalf-agent": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
-    "dev": "tsx src/cli.ts",
-    "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "dev": "tsx src/cli.ts"
   },
   "files": [
     "dist",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
-  "keywords": [
-    "askalf",
-    "agent",
-    "ai",
-    "ai-agent",
-    "ai-workforce",
-    "autonomous",
-    "automation",
-    "claude",
-    "cli",
-    "codex",
-    "computer-use",
-    "device-bridge",
-    "encryption",
-    "mcp",
-    "openai",
-    "orchestration",
-    "security",
-    "self-hosted",
-    "task-queue",
-    "typescript",
-    "websocket",
-    "workforce"
-  ],
-  "author": {
-    "name": "AskAlf",
-    "url": "https://askalf.org"
-  },
+  "keywords": ["askalf", "agent", "cli", "ai", "autonomous", "workforce", "self-hosted", "multi-agent", "orchestration", "automation", "typescript", "claude", "ollama", "mcp", "security", "encryption"],
+  "author": "askalf <support@askalf.org> (https://askalf.org)",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/askalf/agent.git"
+    "url": "https://github.com/askalf/agent.git"
   },
   "bugs": {
     "url": "https://github.com/askalf/agent/issues"
   },
   "homepage": "https://askalf.org",
-  "funding": {
-    "type": "github",
-    "url": "https://github.com/sponsors/askalf"
+  "engines": {
+    "node": ">=22.0.0"
   },
   "publishConfig": {
     "access": "public",
     "provenance": true
   },
-  "engines": {
-    "node": ">=18.0.0"
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/askalf"
   },
   "dependencies": {
-    "ws": "^8.16.0"
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@types/ws": "^8.18.1",
+    "@types/ws": "^8.5.10",
     "typescript": "^5.4.0"
   }
 }

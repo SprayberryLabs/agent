@@ -1,151 +1,90 @@
 #!/usr/bin/env node
 /**
- * AskAlf Agent CLI
- * Connect any device to your AskAlf team via WebSocket bridge.
+ * AskAlf Agent CLI v2.3.0
+ * Connect local devices to your AskAlf fleet via WebSocket bridge.
+ *
+ * Usage:
+ *   askalf-agent connect <api-key> [--url wss://askalf.org] [--name my-device]
+ *   askalf-agent daemon                # Run as background daemon
+ *   askalf-agent install-service       # Install as OS service (systemd/launchd/Windows)
+ *   askalf-agent uninstall-service     # Remove OS service
+ *   askalf-agent status                # Check connection status
+ *   askalf-agent disconnect            # Stop the agent
  */
 
-import { AgentBridge } from './bridge.js';
+import { AgentBridge, scanCapabilities } from './bridge.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
-import { homedir, hostname, platform, type, release, cpus, totalmem, freemem } from 'os';
+import { homedir, hostname, platform, type, release } from 'os';
 import { execSync, spawn } from 'child_process';
-import { createRequire } from 'module';
-import { encryptConfig, decryptConfig } from './crypto.js';
 
-const require = createRequire(import.meta.url);
-const pkg = require('../package.json') as { version: string };
-const VERSION = pkg.version;
-
+const VERSION = '2.3.0';
 const CONFIG_DIR = join(homedir(), '.askalf');
 const CONFIG_FILE = join(CONFIG_DIR, 'agent.json');
 const PID_FILE = join(CONFIG_DIR, 'agent.pid');
-const LOG_FILE = join(CONFIG_DIR, 'agent.log');
+const SERVICE_NAME = 'askalf-agent';
 
 interface AgentConfig {
   apiKey: string;
   url: string;
   deviceName?: string;
-  maxConcurrent?: number;
-  executionTimeoutMs?: number;
 }
 
 function loadConfig(): AgentConfig | null {
   if (!existsSync(CONFIG_FILE)) return null;
   try {
-    const raw = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
-    return decryptConfig(raw) as unknown as AgentConfig;
-  } catch (err) {
-    console.error(`  Failed to load config: ${err instanceof Error ? err.message : 'unknown'}`);
+    return JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
+  } catch {
     return null;
   }
 }
 
 function saveConfig(config: AgentConfig): void {
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
-  const encrypted = encryptConfig(config as unknown as Record<string, unknown>);
-  writeFileSync(CONFIG_FILE, JSON.stringify(encrypted, null, 2), { mode: 0o600 });
+  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
-function detectCapabilities(): Record<string, boolean> {
-  return {
-    shell: true,
-    filesystem: true,
-    bash: hasCommand('bash'),
-    powershell: hasCommand('pwsh') || hasCommand('powershell'),
-    git: hasCommand('git'),
-    docker: hasCommand('docker'),
-    node: hasCommand('node'),
-    python: hasCommand('python3') || hasCommand('python'),
-    claude: hasCommand('claude'),
-    codex: hasCommand('codex'),
-    curl: hasCommand('curl'),
-    wget: hasCommand('wget'),
-    ssh: hasCommand('ssh'),
-    rsync: hasCommand('rsync'),
-    ffmpeg: hasCommand('ffmpeg'),
-    jq: hasCommand('jq'),
-    make: hasCommand('make'),
-    go: hasCommand('go'),
-    rust: hasCommand('cargo'),
-    java: hasCommand('java'),
-    dotnet: hasCommand('dotnet'),
-    kubectl: hasCommand('kubectl'),
-    terraform: hasCommand('terraform'),
-    aws: hasCommand('aws'),
-    gcloud: hasCommand('gcloud'),
-    az: hasCommand('az'),
-  };
-}
-
-function getSystemInfo() {
-  const cpuInfo = cpus();
+function getDeviceInfo() {
+  const caps = scanCapabilities();
   return {
     hostname: hostname(),
     os: `${type()} ${release()} (${platform()})`,
-    arch: process.arch,
-    cpuCores: cpuInfo.length,
-    cpuModel: cpuInfo[0]?.model ?? 'unknown',
-    totalMemoryMB: Math.round(totalmem() / 1024 / 1024),
-    freeMemoryMB: Math.round(freemem() / 1024 / 1024),
-    nodeVersion: process.version,
-    capabilities: detectCapabilities(),
+    capabilities: caps,
+    tools: caps['tools'] as string[],
   };
 }
 
-function hasCommand(cmd: string): boolean {
-  try {
-    execSync(`${platform() === 'win32' ? 'where' : 'which'} ${cmd}`, { stdio: 'ignore', timeout: 3000 });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function connect(apiKey: string, url: string, opts: { name?: string; concurrent?: number; timeout?: number }): Promise<void> {
-  const system = getSystemInfo();
-  const config: AgentConfig = {
-    apiKey,
-    url,
-    deviceName: opts.name || system.hostname,
-    maxConcurrent: opts.concurrent || 2,
-    executionTimeoutMs: (opts.timeout || 10) * 60 * 1000,
-  };
+async function connect(apiKey: string, url: string, deviceName?: string): Promise<void> {
+  const device = getDeviceInfo();
+  const config: AgentConfig = { apiKey, url, deviceName: deviceName || device.hostname };
   saveConfig(config);
 
-  const caps = Object.entries(system.capabilities).filter(([, v]) => v).map(([k]) => k);
-
   console.log(`\n  AskAlf Agent v${VERSION}`);
-  console.log(`  ─────────────────────────────────`);
+  console.log(`  ${'─'.repeat(35)}`);
   console.log(`  Device:   ${config.deviceName}`);
-  console.log(`  OS:       ${system.os}`);
-  console.log(`  CPU:      ${system.cpuCores} cores (${system.cpuModel.substring(0, 40)})`);
-  console.log(`  Memory:   ${system.freeMemoryMB}MB free / ${system.totalMemoryMB}MB total`);
-  console.log(`  Node:     ${system.nodeVersion}`);
+  console.log(`  OS:       ${device.os}`);
+  console.log(`  CPU:      ${device.capabilities['cpu_cores']} cores (${(device.capabilities['cpu_model'] as string || '').substring(0, 50)})`);
+  console.log(`  Memory:   ${device.capabilities['memory_free_mb']}MB free / ${device.capabilities['memory_total_mb']}MB total`);
+  console.log(`  Node:     ${process.version}`);
   console.log(`  Server:   ${url}`);
-  console.log(`  Workers:  ${config.maxConcurrent} concurrent`);
-  console.log(`  Timeout:  ${(config.executionTimeoutMs! / 60000).toFixed(0)} minutes`);
-  console.log(`  Tools:    ${caps.join(', ')}`);
-  console.log(`  ─────────────────────────────────\n`);
+  console.log(`  Workers:  ${device.capabilities['max_workers']} concurrent`);
+  console.log(`  Timeout:  10 minutes`);
+  console.log(`  Tools:    ${device.tools.join(', ')}`);
+  console.log(`  Claude:   ${device.capabilities['claude_cli'] ? 'Available' : 'Not found — install with: npm i -g @anthropic-ai/claude-code'}`);
+  console.log(`  ${'─'.repeat(35)}\n`);
 
   const bridge = new AgentBridge({
     apiKey,
     url,
     deviceName: config.deviceName!,
-    hostname: system.hostname,
-    os: system.os,
-    capabilities: system.capabilities,
-    systemInfo: {
-      arch: system.arch,
-      cpuCores: system.cpuCores,
-      totalMemoryMB: system.totalMemoryMB,
-      nodeVersion: system.nodeVersion,
-    },
-    maxConcurrent: config.maxConcurrent!,
-    executionTimeoutMs: config.executionTimeoutMs!,
+    hostname: device.hostname,
+    os: device.os,
+    capabilities: device.capabilities,
   });
 
+  // Handle shutdown
   const shutdown = () => {
-    console.log('\n  Shutting down...');
+    console.log('\n  Disconnecting...');
     bridge.disconnect();
     process.exit(0);
   };
@@ -155,59 +94,93 @@ async function connect(apiKey: string, url: string, opts: { name?: string; concu
   await bridge.connect();
 }
 
-function daemon(): void {
+async function daemon(): Promise<void> {
   const config = loadConfig();
   if (!config) {
     console.error('No configuration found. Run `askalf-agent connect <api-key>` first.');
     process.exit(1);
   }
 
-  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
+  // Check if already running
+  if (existsSync(PID_FILE)) {
+    const pid = readFileSync(PID_FILE, 'utf8').trim();
+    try {
+      process.kill(parseInt(pid), 0);
+      console.log(`Agent already running (PID: ${pid}). Use 'askalf-agent disconnect' to stop it first.`);
+      process.exit(0);
+    } catch { /* not running, continue */ }
+  }
 
-  const args = ['connect', config.apiKey, '--url', config.url];
+  const args = [process.argv[1]!, 'connect', config.apiKey, '--url', config.url];
   if (config.deviceName) args.push('--name', config.deviceName);
-  if (config.maxConcurrent) args.push('--concurrent', String(config.maxConcurrent));
 
-  const child = spawn(process.execPath, [process.argv[1]!, ...args], {
+  const child = spawn(process.execPath, args, {
     detached: true,
-    stdio: ['ignore', 'ignore', 'ignore'],
+    stdio: 'ignore',
+    env: { ...process.env },
   });
   child.unref();
 
+  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
   writeFileSync(PID_FILE, String(child.pid));
-  console.log(`Agent daemon started (PID: ${child.pid})`);
-  console.log(`  Config: ${CONFIG_FILE}`);
-  console.log(`  PID:    ${PID_FILE}`);
+
+  console.log(`  AskAlf Agent daemon started`);
+  console.log(`  PID:    ${child.pid}`);
+  console.log(`  Server: ${config.url}`);
+  console.log(`  Device: ${config.deviceName || hostname()}`);
+  console.log(`\n  Use 'askalf-agent status' to check, 'askalf-agent disconnect' to stop.`);
   process.exit(0);
 }
 
 function status(): void {
   const config = loadConfig();
   if (!config) {
-    console.log('Not configured. Run `askalf-agent connect <api-key>` first.');
+    console.log('  Not configured. Run `askalf-agent connect <api-key>` first.');
     return;
   }
 
   console.log(`\n  AskAlf Agent v${VERSION}`);
-  console.log(`  Server:  ${config.url}`);
-  console.log(`  Device:  ${config.deviceName}`);
+  console.log(`  Server: ${config.url}`);
+  console.log(`  Device: ${config.deviceName || hostname()}`);
 
+  // Check daemon PID
   if (existsSync(PID_FILE)) {
-    const pid = parseInt(readFileSync(PID_FILE, 'utf8').trim());
+    const pid = readFileSync(PID_FILE, 'utf8').trim();
     try {
-      process.kill(pid, 0);
-      console.log(`  Status:  Running (PID ${pid})`);
+      process.kill(parseInt(pid), 0);
+      console.log(`  Daemon:  Running (PID: ${pid})`);
     } catch {
-      console.log('  Status:  Not running (stale PID)');
+      console.log('  Daemon:  Not running (stale PID file)');
     }
   } else {
-    console.log('  Status:  Not running');
+    console.log('  Daemon:  Not running');
   }
 
-  const system = getSystemInfo();
-  const caps = Object.entries(system.capabilities).filter(([, v]) => v).map(([k]) => k);
-  console.log(`  Tools:   ${caps.join(', ')}`);
-  console.log(`  Memory:  ${system.freeMemoryMB}MB free / ${system.totalMemoryMB}MB total\n`);
+  // Check OS service
+  const os = platform();
+  if (os === 'linux') {
+    try {
+      const result = execSync(`systemctl is-active ${SERVICE_NAME} 2>/dev/null`, { encoding: 'utf8' }).trim();
+      console.log(`  Service: ${result} (systemd)`);
+    } catch {
+      console.log('  Service: Not installed');
+    }
+  } else if (os === 'darwin') {
+    try {
+      const plist = join(homedir(), `Library/LaunchAgents/org.askalf.agent.plist`);
+      console.log(`  Service: ${existsSync(plist) ? 'Installed (launchd)' : 'Not installed'}`);
+    } catch {
+      console.log('  Service: Not installed');
+    }
+  } else if (os === 'win32') {
+    try {
+      execSync(`sc query ${SERVICE_NAME}`, { stdio: 'ignore' });
+      console.log('  Service: Installed (Windows Service)');
+    } catch {
+      console.log('  Service: Not installed');
+    }
+  }
+  console.log('');
 }
 
 function disconnect(): void {
@@ -215,18 +188,229 @@ function disconnect(): void {
     const pid = parseInt(readFileSync(PID_FILE, 'utf8').trim());
     try {
       process.kill(pid, 'SIGTERM');
-      console.log(`Agent stopped (PID: ${pid})`);
+      console.log(`  Agent stopped (PID: ${pid})`);
     } catch {
-      console.log('Agent was not running.');
+      console.log('  Agent was not running.');
     }
     try { unlinkSync(PID_FILE); } catch { /* ignore */ }
   } else {
-    console.log('No running agent found.');
+    console.log('  No running daemon found.');
   }
 }
 
-// ── CLI argument parsing ──
+function installService(): void {
+  const config = loadConfig();
+  if (!config) {
+    console.error('  No configuration found. Run `askalf-agent connect <api-key>` first to save config.');
+    process.exit(1);
+  }
 
+  const os = platform();
+  const agentPath = process.argv[1]!;
+  const nodePath = process.execPath;
+
+  if (os === 'linux') {
+    installSystemd(nodePath, agentPath, config);
+  } else if (os === 'darwin') {
+    installLaunchd(nodePath, agentPath, config);
+  } else if (os === 'win32') {
+    installWindowsService(nodePath, agentPath, config);
+  } else {
+    console.error(`  Unsupported platform: ${os}. Use 'askalf-agent daemon' instead.`);
+    process.exit(1);
+  }
+}
+
+function installSystemd(nodePath: string, agentPath: string, config: AgentConfig): void {
+  const args = [agentPath, 'connect', config.apiKey, '--url', config.url];
+  if (config.deviceName) args.push('--name', config.deviceName);
+
+  const unit = `[Unit]
+Description=AskAlf Agent — AI Workforce Device Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${nodePath} ${args.join(' ')}
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+WorkingDirectory=${homedir()}
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+`;
+
+  const unitPath = `/etc/systemd/system/${SERVICE_NAME}.service`;
+  const isRoot = process.getuid?.() === 0;
+
+  if (!isRoot) {
+    // Try user service instead
+    const userUnitDir = join(homedir(), '.config/systemd/user');
+    const userUnitPath = join(userUnitDir, `${SERVICE_NAME}.service`);
+
+    try {
+      mkdirSync(userUnitDir, { recursive: true });
+      writeFileSync(userUnitPath, unit);
+      execSync(`systemctl --user daemon-reload`, { stdio: 'inherit' });
+      execSync(`systemctl --user enable ${SERVICE_NAME}`, { stdio: 'inherit' });
+      execSync(`systemctl --user start ${SERVICE_NAME}`, { stdio: 'inherit' });
+      console.log(`\n  Service installed (user systemd)`);
+      console.log(`  Unit:   ${userUnitPath}`);
+      console.log(`  Status: systemctl --user status ${SERVICE_NAME}`);
+      console.log(`  Logs:   journalctl --user -u ${SERVICE_NAME} -f`);
+      console.log(`  Stop:   systemctl --user stop ${SERVICE_NAME}`);
+    } catch (err) {
+      console.error(`  Failed to install user service: ${err instanceof Error ? err.message : err}`);
+      console.log(`\n  Try running with sudo for system-wide install:`);
+      console.log(`  sudo askalf-agent install-service`);
+    }
+    return;
+  }
+
+  try {
+    writeFileSync(unitPath, unit);
+    execSync('systemctl daemon-reload', { stdio: 'inherit' });
+    execSync(`systemctl enable ${SERVICE_NAME}`, { stdio: 'inherit' });
+    execSync(`systemctl start ${SERVICE_NAME}`, { stdio: 'inherit' });
+    console.log(`\n  Service installed (systemd)`);
+    console.log(`  Unit:   ${unitPath}`);
+    console.log(`  Status: systemctl status ${SERVICE_NAME}`);
+    console.log(`  Logs:   journalctl -u ${SERVICE_NAME} -f`);
+    console.log(`  Stop:   systemctl stop ${SERVICE_NAME}`);
+  } catch (err) {
+    console.error(`  Failed to install service: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+function installLaunchd(nodePath: string, agentPath: string, config: AgentConfig): void {
+  const args = [agentPath, 'connect', config.apiKey, '--url', config.url];
+  if (config.deviceName) args.push('--name', config.deviceName);
+
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>org.askalf.agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${nodePath}</string>
+${args.map(a => `    <string>${a}</string>`).join('\n')}
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${join(CONFIG_DIR, 'agent.log')}</string>
+  <key>StandardErrorPath</key>
+  <string>${join(CONFIG_DIR, 'agent.err')}</string>
+</dict>
+</plist>
+`;
+
+  const plistDir = join(homedir(), 'Library/LaunchAgents');
+  const plistPath = join(plistDir, 'org.askalf.agent.plist');
+
+  try {
+    mkdirSync(plistDir, { recursive: true });
+    writeFileSync(plistPath, plist);
+    execSync(`launchctl load ${plistPath}`, { stdio: 'inherit' });
+    console.log(`\n  Service installed (launchd)`);
+    console.log(`  Plist:  ${plistPath}`);
+    console.log(`  Logs:   tail -f ${join(CONFIG_DIR, 'agent.log')}`);
+    console.log(`  Stop:   launchctl unload ${plistPath}`);
+  } catch (err) {
+    console.error(`  Failed to install service: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+function installWindowsService(nodePath: string, agentPath: string, config: AgentConfig): void {
+  const args = [agentPath, 'connect', config.apiKey, '--url', config.url];
+  if (config.deviceName) args.push('--name', config.deviceName);
+
+  // Check for nssm
+  let hasNssm = false;
+  try { execSync('where nssm', { stdio: 'ignore' }); hasNssm = true; } catch { /* not found */ }
+
+  if (hasNssm) {
+    try {
+      execSync(`nssm install ${SERVICE_NAME} "${nodePath}" ${args.map(a => `"${a}"`).join(' ')}`, { stdio: 'inherit' });
+      execSync(`nssm set ${SERVICE_NAME} AppDirectory "${homedir()}"`, { stdio: 'inherit' });
+      execSync(`nssm set ${SERVICE_NAME} Description "AskAlf Agent — AI Workforce Device Bridge"`, { stdio: 'inherit' });
+      execSync(`nssm start ${SERVICE_NAME}`, { stdio: 'inherit' });
+      console.log(`\n  Service installed (Windows Service via nssm)`);
+      console.log(`  Name:   ${SERVICE_NAME}`);
+      console.log(`  Status: nssm status ${SERVICE_NAME}`);
+      console.log(`  Stop:   nssm stop ${SERVICE_NAME}`);
+    } catch (err) {
+      console.error(`  Failed to install service: ${err instanceof Error ? err.message : err}`);
+    }
+    return;
+  }
+
+  // Fallback: create a scheduled task that runs at login
+  const taskCmd = `"${nodePath}" ${args.map(a => `"${a}"`).join(' ')}`;
+  try {
+    execSync(
+      `schtasks /create /tn "${SERVICE_NAME}" /tr ${taskCmd} /sc onlogon /rl highest /f`,
+      { stdio: 'inherit' },
+    );
+    // Also start it now
+    execSync(`schtasks /run /tn "${SERVICE_NAME}"`, { stdio: 'inherit' });
+    console.log(`\n  Service installed (Windows Scheduled Task — runs on login)`);
+    console.log(`  Task:   ${SERVICE_NAME}`);
+    console.log(`  Status: schtasks /query /tn "${SERVICE_NAME}"`);
+    console.log(`  Stop:   schtasks /end /tn "${SERVICE_NAME}"`);
+    console.log(`  Remove: askalf-agent uninstall-service`);
+    console.log(`\n  For a full Windows Service, install nssm (nssm.cc) and re-run.`);
+  } catch (err) {
+    console.error(`  Failed to create scheduled task: ${err instanceof Error ? err.message : err}`);
+    console.log(`\n  Alternative: use 'askalf-agent daemon' to run in background.`);
+  }
+}
+
+function uninstallService(): void {
+  const os = platform();
+
+  if (os === 'linux') {
+    try {
+      execSync(`systemctl stop ${SERVICE_NAME} 2>/dev/null; systemctl disable ${SERVICE_NAME} 2>/dev/null`, { stdio: 'inherit' });
+      const unitPath = `/etc/systemd/system/${SERVICE_NAME}.service`;
+      const userUnitPath = join(homedir(), `.config/systemd/user/${SERVICE_NAME}.service`);
+      try { unlinkSync(unitPath); } catch { /* ignore */ }
+      try { unlinkSync(userUnitPath); } catch { /* ignore */ }
+      try { execSync('systemctl daemon-reload', { stdio: 'ignore' }); } catch { /* ignore */ }
+      try { execSync('systemctl --user daemon-reload', { stdio: 'ignore' }); } catch { /* ignore */ }
+      console.log('  Service removed (systemd)');
+    } catch (err) {
+      console.error(`  Failed: ${err instanceof Error ? err.message : err}`);
+    }
+  } else if (os === 'darwin') {
+    const plistPath = join(homedir(), 'Library/LaunchAgents/org.askalf.agent.plist');
+    try {
+      execSync(`launchctl unload ${plistPath} 2>/dev/null`, { stdio: 'inherit' });
+      try { unlinkSync(plistPath); } catch { /* ignore */ }
+      console.log('  Service removed (launchd)');
+    } catch (err) {
+      console.error(`  Failed: ${err instanceof Error ? err.message : err}`);
+    }
+  } else if (os === 'win32') {
+    try {
+      execSync(`nssm stop ${SERVICE_NAME} 2>nul & nssm remove ${SERVICE_NAME} confirm 2>nul`, { stdio: 'inherit' });
+    } catch { /* nssm might not exist */ }
+    try {
+      execSync(`schtasks /delete /tn "${SERVICE_NAME}" /f`, { stdio: 'inherit' });
+    } catch { /* task might not exist */ }
+    console.log('  Service removed');
+  }
+}
+
+// Parse CLI arguments
 const args = process.argv.slice(2);
 
 if (args.includes('--version') || args.includes('-v')) {
@@ -236,103 +420,69 @@ if (args.includes('--version') || args.includes('-v')) {
 
 const command = (args.includes('--help') || args.includes('-h')) ? undefined : args[0];
 
-function getFlag(flag: string): string | undefined {
-  const idx = args.indexOf(flag);
-  return idx >= 0 ? args[idx + 1] : undefined;
-}
-
-// Import security for audit/policy commands
-async function showAudit(limit: number): Promise<void> {
-  const { readAuditLog } = await import('./security.js');
-  const entries = readAuditLog(limit);
-  if (entries.length === 0) {
-    console.log('No audit entries.');
-    return;
-  }
-  console.log(`\n  Last ${entries.length} executions:\n`);
-  for (const e of entries) {
-    const icon = e.result === 'success' ? '\u2713' : e.result === 'denied' ? '\u2717' : e.result === 'blocked' ? '\u26D4' : '\u2717';
-    const cost = e.cost ? ` $${e.cost.toFixed(4)}` : '';
-    const dur = e.durationMs ? ` ${(e.durationMs / 1000).toFixed(1)}s` : '';
-    console.log(`  ${icon} ${e.timestamp.slice(0, 19)} | ${e.agentName.padEnd(20)} | ${e.executor.padEnd(6)} | ${e.result}${cost}${dur}`);
-    if (e.error) console.log(`    Error: ${e.error.substring(0, 100)}`);
-  }
-  console.log();
-}
-
-async function showPolicy(): Promise<void> {
-  const { loadPolicy } = await import('./security.js');
-  const p = loadPolicy();
-  console.log('\n  Security Policy:\n');
-  console.log(`  Require approval:  ${p.requireApproval ? 'YES' : 'no'}`);
-  console.log(`  Trusted agents:    ${p.trustedAgents.length > 0 ? p.trustedAgents.join(', ') : 'none'}`);
-  console.log(`  Blocked patterns:  ${p.blockedPatterns.length}`);
-  console.log(`  Allowed paths:     ${p.allowedPaths.length > 0 ? p.allowedPaths.join(', ') : 'unrestricted'}`);
-  console.log(`  Max timeout:       ${(p.maxTimeoutMs / 60000).toFixed(0)} minutes`);
-  console.log(`  Sanitize output:   ${p.sanitizeOutput ? 'YES' : 'no'}`);
-  console.log(`  Audit logging:     ${p.auditLog ? 'YES' : 'no'}`);
-  console.log(`\n  Edit: ${join(homedir(), '.askalf', 'policy.json')}\n`);
-}
-
 switch (command) {
   case 'connect': {
     const apiKey = args[1];
-    if (!apiKey || apiKey.startsWith('--')) {
-      console.error('Usage: askalf-agent connect <api-key> [options]');
-      console.error('  --url <url>           Server URL (default: wss://askalf.org)');
-      console.error('  --name <name>         Device name (default: hostname)');
-      console.error('  --concurrent <n>      Max concurrent tasks (default: 2)');
-      console.error('  --timeout <minutes>   Execution timeout (default: 10)');
+    if (!apiKey) {
+      console.error('Usage: askalf-agent connect <api-key> [--url wss://askalf.org] [--name my-device]');
       process.exit(1);
     }
-    connect(apiKey, getFlag('--url') || 'wss://askalf.org', {
-      name: getFlag('--name'),
-      concurrent: getFlag('--concurrent') ? parseInt(getFlag('--concurrent')!) : undefined,
-      timeout: getFlag('--timeout') ? parseInt(getFlag('--timeout')!) : undefined,
-    });
+    const urlIdx = args.indexOf('--url');
+    const url = urlIdx >= 0 ? args[urlIdx + 1]! : 'wss://askalf.org';
+    const nameIdx = args.indexOf('--name');
+    const deviceName = nameIdx >= 0 ? args[nameIdx + 1] : undefined;
+    connect(apiKey, url, deviceName);
     break;
   }
   case 'daemon':
     daemon();
     break;
+  case 'install-service':
+    installService();
+    break;
+  case 'uninstall-service':
+    uninstallService();
+    break;
   case 'status':
     status();
     break;
   case 'disconnect':
-  case 'stop':
     disconnect();
     break;
-  case 'audit':
-    showAudit(getFlag('--limit') ? parseInt(getFlag('--limit')!) : 50);
-    break;
-  case 'policy':
-    showPolicy();
+  case 'scan':
+    console.log(`\n  AskAlf Agent v${VERSION} — Capabilities Scan\n`);
+    const caps = scanCapabilities();
+    for (const [key, val] of Object.entries(caps)) {
+      if (Array.isArray(val)) {
+        console.log(`  ${key}: ${val.join(', ')}`);
+      } else {
+        console.log(`  ${key}: ${val}`);
+      }
+    }
+    console.log('');
     break;
   default:
     console.log(`
-  AskAlf Agent v${VERSION}
+  AskAlf Agent CLI v${VERSION}
 
-  Connect any device to your AskAlf team.
-
-  Commands:
-    connect <api-key>    Connect this device
-    daemon               Run as background service
-    status               Check connection and device info
-    disconnect           Stop the agent
-    audit                View execution audit log
-    policy               View security policy
+  Usage:
+    askalf-agent connect <api-key>     Connect this device to your fleet
+    askalf-agent daemon                Run as background daemon
+    askalf-agent install-service       Install as OS service (auto-start on boot)
+    askalf-agent uninstall-service     Remove OS service
+    askalf-agent status                Check connection and service status
+    askalf-agent disconnect            Stop the running daemon
+    askalf-agent scan                  Run capabilities scan (no server needed)
 
   Options:
-    --url <url>          Server URL (default: wss://askalf.org)
-    --name <name>        Device name (default: hostname)
-    --concurrent <n>     Max concurrent tasks (default: 2)
-    --timeout <min>      Execution timeout in minutes (default: 10)
-    --version            Show version
-    --help               Show this help
+    --url <url>    Server URL (default: wss://askalf.org)
+    --name <name>  Device name (default: hostname)
+    -v, --version  Show version
+    -h, --help     Show this help
 
   Examples:
-    askalf-agent connect sk-ant-xxx
-    askalf-agent connect sk-ant-xxx --url wss://my-server.com --name prod-01
-    askalf-agent daemon
+    askalf-agent connect sk-abc123 --url ws://192.168.1.100:3005 --name my-server
+    askalf-agent install-service      # Runs on boot (Linux/macOS/Windows)
+    askalf-agent daemon               # Background process (any OS)
 `);
 }
