@@ -18,7 +18,7 @@ import { join } from 'path';
 import { homedir, hostname, platform, type, release } from 'os';
 import { execSync, spawn } from 'child_process';
 
-const VERSION = '2.3.0';
+const VERSION = '2.3.1';
 const CONFIG_DIR = join(homedir(), '.askalf');
 const CONFIG_FILE = join(CONFIG_DIR, 'agent.json');
 const PID_FILE = join(CONFIG_DIR, 'agent.pid');
@@ -353,11 +353,15 @@ function installWindowsService(nodePath: string, agentPath: string, config: Agen
     return;
   }
 
-  // Fallback: create a scheduled task that runs at login
-  const taskCmd = `"${nodePath}" ${args.map(a => `"${a}"`).join(' ')}`;
+  // Fallback: create a .bat wrapper that schtasks can invoke cleanly
+  mkdirSync(CONFIG_DIR, { recursive: true });
+  const batPath = join(CONFIG_DIR, 'agent-service.bat');
+  const batContent = `@echo off\r\n"${nodePath}" ${args.map(a => `"${a}"`).join(' ')}\r\n`;
+  writeFileSync(batPath, batContent);
+
   try {
     execSync(
-      `schtasks /create /tn "${SERVICE_NAME}" /tr ${taskCmd} /sc onlogon /rl highest /f`,
+      `schtasks /create /tn "${SERVICE_NAME}" /tr "\\"${batPath}\\"" /sc onlogon /rl highest /f`,
       { stdio: 'inherit' },
     );
     // Also start it now
