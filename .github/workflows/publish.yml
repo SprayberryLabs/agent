@@ -23,6 +23,11 @@ jobs:
 
       - run: npm run build
 
+      - name: Verify README exists
+        run: |
+          ls -la README.md
+          cat package.json | grep -A3 '"files"'
+
       - run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
