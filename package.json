@@ -1,7 +1,7 @@
 {
   "name": "@askalf/agent",
-  "version": "2.9.8",
-  "description": "AskAlf Agent — Connect any device to your AskAlf workforce. Multi-executor (Claude, Codex, shell), AES-256-GCM encryption, audit logging, security policy engine.",
+  "version": "2.9.9",
+  "description": "Connect any device to a self-healing AI fleet. Nervous system signals, immune system alerts, auto-reconnect, capabilities scan. One command to install as a persistent service.",
   "type": "module",
   "main": "dist/index.js",
   "types": "./dist/index.d.ts",
