@@ -1,6 +1,6 @@
 {
   "name": "@askalf/agent",
-  "version": "2.9.5",
+  "version": "2.9.6",
   "description": "AskAlf Agent — Connect any device to your AskAlf workforce. Multi-executor (Claude, Codex, shell), AES-256-GCM encryption, audit logging, security policy engine.",
   "type": "module",
   "main": "dist/index.js",
@@ -44,6 +44,6 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/ws": "^8.5.10",
-    "typescript": "^6.0.2"
+    "typescript": "^5.4.0"
   }
 }

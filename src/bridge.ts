@@ -229,8 +229,47 @@ export class AgentBridge {
         }
         break;
 
+      // ── Nervous System ──
+      case 'agent:message': {
+        const from = msg.payload['from_agent'] as string || 'System';
+        const subject = msg.payload['subject'] as string || '';
+        const body = msg.payload['body'] as string || '';
+        const urgency = msg.payload['urgency'] as number || 0;
+        const urgencyLabel = urgency > 0.8 ? 'CRITICAL' : urgency > 0.5 ? 'HIGH' : 'INFO';
+        console.log(`  [${urgencyLabel}] Message from ${from}: ${subject}`);
+        if (body) console.log(`    ${body.substring(0, 200)}`);
+        // Auto-acknowledge
+        if (msg.payload['requires_response']) {
+          this.send('agent:message:ack', { message_id: msg.payload['id'], from: this.options.deviceName });
+        }
+        break;
+      }
+
+      case 'incident:alert': {
+        const title = msg.payload['title'] as string || 'Unknown incident';
+        const severity = msg.payload['severity'] as string || 'medium';
+        const team = (msg.payload['response_team'] as string[]) || [];
+        console.log(`  [INCIDENT ${severity.toUpperCase()}] ${title}`);
+        if (team.length > 0) console.log(`    Response team: ${team.join(', ')}`);
+        break;
+      }
+
+      case 'signal:broadcast': {
+        // Fleet-wide signal awareness — log important ones
+        const agent = msg.payload['agent_name'] as string;
+        const signal = msg.payload['signal_type'] as string;
+        const value = msg.payload['value'] as number;
+        if (value > 0.7) {
+          console.log(`  [SIGNAL] ${agent}: ${signal} = ${value.toFixed(2)}`);
+        }
+        break;
+      }
+
       default:
-        // Unknown message type — ignore
+        // Unknown message type — log for debugging
+        if (msg.type.includes(':')) {
+          console.log(`  [${msg.type}] ${JSON.stringify(msg.payload).substring(0, 100)}`);
+        }
         break;
     }
   }
@@ -345,10 +384,15 @@ export class AgentBridge {
           cost: result.cost,
         });
         console.log(`  Claude task completed: ${task.executionId} ($${result.cost.toFixed(4)})`);
+        // Emit success signal to nervous system
+        this.emitSignal('success', 1.0, `Completed ${task.agentName} task ($${result.cost.toFixed(4)})`);
+        if (result.cost > 0.5) this.emitSignal('urgency', Math.min(result.cost, 1), `High cost: $${result.cost.toFixed(4)}`);
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         this.send('execution:failed', { executionId: task.executionId, error: errorMsg });
         console.error(`  Claude task failed: ${task.executionId} — ${errorMsg}`);
+        // Emit failure signal
+        this.emitSignal('stuck', 0.8, `Failed: ${errorMsg.substring(0, 80)}`);
       } finally {
         this.activeExecution = null;
       }
@@ -525,15 +569,30 @@ export class AgentBridge {
     });
   }
 
+  /**
+   * Emit a signal to the fleet's nervous system.
+   */
+  private emitSignal(signalType: string, value: number, context: string = ''): void {
+    this.send('signal:emit', {
+      deviceName: this.options.deviceName,
+      signalType,
+      value: Math.max(0, Math.min(1, value)),
+      context,
+    });
+  }
+
   private startHeartbeat(): void {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
+      const memUsage = process.memoryUsage();
       this.send('device:heartbeat', {
         deviceName: this.options.deviceName,
         hostname: this.options.hostname,
         os: this.options.os,
-        load: 0,
+        load: this.activeExecution ? 1 : 0,
         activeExecutions: this.activeExecution ? 1 : 0,
+        memoryMb: Math.round(memUsage.rss / 1024 / 1024),
+        uptime: Math.round(process.uptime()),
       });
     }, this.options.heartbeatInterval);
   }
