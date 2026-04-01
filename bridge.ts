@@ -1,0 +1,623 @@
+/**
+ * AskAlf Agent Bridge — WebSocket client
+ * Connects to the Forge's /ws/agent-bridge endpoint.
+ * Handles device registration, heartbeat, task dispatch, capabilities scan, and execution.
+ */
+
+import WebSocket from 'ws';
+import { execSync, spawn, type ChildProcess } from 'child_process';
+import { cpus, totalmem, freemem, hostname as osHostname, type as osType, release as osRelease, platform as osPlatform } from 'os';
+
+export interface BridgeOptions {
+  apiKey: string;
+  url: string;
+  deviceName: string;
+  hostname: string;
+  os: string;
+  capabilities: Record<string, unknown>;
+  reconnectInterval?: number;
+  heartbeatInterval?: number;
+}
+
+interface ServerMessage {
+  type: string;
+  payload: Record<string, unknown>;
+}
+
+type ExecutionMode = 'auto' | 'claude' | 'shell';
+
+interface TaskPayload {
+  executionId: string;
+  agentId: string;
+  agentName: string;
+  input: string;
+  maxTurns?: number;
+  maxBudget?: number;
+  credentials?: string;
+  mode?: ExecutionMode;
+}
+
+export function scanCapabilities(): Record<string, unknown> {
+  const cpu = cpus();
+  const capabilities: Record<string, unknown> = {
+    cpu_cores: cpu.length,
+    cpu_model: cpu[0]?.model || 'unknown',
+    memory_total_mb: Math.round(totalmem() / 1024 / 1024),
+    memory_free_mb: Math.round(freemem() / 1024 / 1024),
+    platform: osPlatform(),
+    os: `${osType()} ${osRelease()} (${osPlatform()})`,
+    hostname: osHostname(),
+    node_version: process.version,
+    tools: [] as string[],
+  };
+
+  // Detect available tools
+  const toolChecks = [
+    'shell', 'filesystem', 'bash', 'powershell', 'git', 'docker',
+    'node', 'python', 'curl', 'ssh', 'kubectl', 'npm', 'pnpm',
+    'go', 'rustc', 'java', 'ruby', 'php',
+  ];
+  const tools: string[] = ['shell', 'filesystem']; // Always available
+  for (const tool of toolChecks) {
+    if (tool === 'shell' || tool === 'filesystem') continue;
+    if (tool === 'powershell' && osPlatform() === 'win32') { tools.push('powershell'); continue; }
+    if (tool === 'bash' && osPlatform() !== 'win32') { tools.push('bash'); continue; }
+    try {
+      const cmd = osPlatform() === 'win32' ? `where ${tool}` : `which ${tool}`;
+      execSync(cmd, { stdio: 'ignore', timeout: 3000 });
+      tools.push(tool);
+    } catch { /* not available */ }
+  }
+  capabilities['tools'] = tools;
+  capabilities['max_workers'] = Math.max(1, Math.min(cpu.length, 4));
+
+  // Check for Claude CLI
+  try {
+    const cmd = osPlatform() === 'win32' ? 'where claude' : 'which claude';
+    execSync(cmd, { stdio: 'ignore', timeout: 3000 });
+    capabilities['claude_cli'] = true;
+  } catch {
+    capabilities['claude_cli'] = false;
+  }
+
+  return capabilities;
+}
+
+export class AgentBridge {
+  private ws: WebSocket | null = null;
+  private options: Required<BridgeOptions>;
+  private deviceId: string | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private activeExecution: { id: string; process: ChildProcess } | null = null;
+  private shouldReconnect = true;
+  private reconnectAttempt = 0;
+  private onRegistered: (() => void) | null = null;
+
+  constructor(options: BridgeOptions) {
+    this.options = {
+      reconnectInterval: 5000,
+      heartbeatInterval: 30000,
+      ...options,
+    };
+  }
+
+  async connect(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const wsUrl = this.options.url.replace(/^https?:\/\//, 'wss://').replace(/\/$/, '') + '/ws/agent-bridge';
+
+      console.log(`  Connecting to ${wsUrl}...`);
+
+      this.ws = new WebSocket(wsUrl, ['askalf-agent-bridge', this.options.apiKey], {
+        headers: {
+          'Authorization': `Bearer ${this.options.apiKey}`,
+        },
+        handshakeTimeout: 10_000,
+      });
+
+      this.ws.on('open', () => {
+        console.log('  Connected. Registering device...');
+        this.reconnectAttempt = 0;
+
+        // Register or reconnect
+        if (this.deviceId) {
+          this.send('device:reconnect', { deviceId: this.deviceId });
+        } else {
+          this.send('device:register', {
+            deviceName: this.options.deviceName,
+            hostname: this.options.hostname,
+            os: this.options.os,
+            capabilities: this.options.capabilities,
+            deviceType: 'cli',
+          });
+        }
+
+        // Don't start heartbeat until registered — avoids race condition
+        this.onRegistered = () => {
+          this.startHeartbeat();
+          resolve();
+        };
+        // Fallback: if no response in 10s, start heartbeat anyway (triggers server auto-register)
+        setTimeout(() => {
+          if (!this.deviceId) {
+            console.log('  Registration timeout — starting heartbeat for auto-register...');
+            this.startHeartbeat();
+            this.onRegistered = null;
+            resolve();
+          }
+        }, 10_000);
+      });
+
+      this.ws.on('message', (data) => {
+        try {
+          const msg: ServerMessage = JSON.parse(data.toString());
+          this.handleMessage(msg);
+        } catch (err) {
+          console.error('  Failed to parse server message:', err);
+        }
+      });
+
+      this.ws.on('close', (code, reason) => {
+        console.log(`  Disconnected (${code}: ${reason.toString() || 'no reason'})`);
+        this.stopHeartbeat();
+        if (this.shouldReconnect) {
+          this.scheduleReconnect();
+        }
+      });
+
+      this.ws.on('error', (err) => {
+        console.error(`  WebSocket error: ${err.message}`);
+        // Don't reject if we're reconnecting
+        if (!this.deviceId && this.reconnectAttempt === 0) {
+          reject(err);
+        }
+      });
+    });
+  }
+
+  disconnect(): void {
+    this.shouldReconnect = false;
+    this.stopHeartbeat();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.activeExecution) {
+      this.activeExecution.process.kill('SIGTERM');
+      this.activeExecution = null;
+    }
+    if (this.ws) {
+      this.ws.close(1000, 'Client disconnect');
+      this.ws = null;
+    }
+  }
+
+  private send(type: string, payload: Record<string, unknown>): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type, payload }));
+    }
+  }
+
+  private handleMessage(msg: ServerMessage): void {
+    switch (msg.type) {
+      case 'device:registered':
+        this.deviceId = msg.payload['deviceId'] as string;
+        console.log(`  Registered as device ${this.deviceId}`);
+        console.log('  Ready — waiting for tasks...\n');
+        if (this.onRegistered) {
+          this.onRegistered();
+          this.onRegistered = null;
+        }
+        break;
+
+      case 'capabilities:scan':
+        this.handleCapabilitiesScan();
+        break;
+
+      case 'task:dispatch':
+        this.handleTask(msg.payload as unknown as TaskPayload);
+        break;
+
+      case 'task:cancel':
+        this.handleCancel(msg.payload['executionId'] as string);
+        break;
+
+      case 'device:error':
+        console.error(`  Server error: [${msg.payload['code']}] ${msg.payload['message']}`);
+        if (msg.payload['code'] === 'AUTH_FAILED') {
+          this.shouldReconnect = false;
+        }
+        break;
+
+      // ── Nervous System ──
+      case 'agent:message': {
+        const from = msg.payload['from_agent'] as string || 'System';
+        const subject = msg.payload['subject'] as string || '';
+        const body = msg.payload['body'] as string || '';
+        const urgency = msg.payload['urgency'] as number || 0;
+        const urgencyLabel = urgency > 0.8 ? 'CRITICAL' : urgency > 0.5 ? 'HIGH' : 'INFO';
+        console.log(`  [${urgencyLabel}] Message from ${from}: ${subject}`);
+        if (body) console.log(`    ${body.substring(0, 200)}`);
+        // Auto-acknowledge
+        if (msg.payload['requires_response']) {
+          this.send('agent:message:ack', { message_id: msg.payload['id'], from: this.options.deviceName });
+        }
+        break;
+      }
+
+      case 'incident:alert': {
+        const title = msg.payload['title'] as string || 'Unknown incident';
+        const severity = msg.payload['severity'] as string || 'medium';
+        const team = (msg.payload['response_team'] as string[]) || [];
+        console.log(`  [INCIDENT ${severity.toUpperCase()}] ${title}`);
+        if (team.length > 0) console.log(`    Response team: ${team.join(', ')}`);
+        break;
+      }
+
+      case 'signal:broadcast': {
+        // Fleet-wide signal awareness — log important ones
+        const agent = msg.payload['agent_name'] as string;
+        const signal = msg.payload['signal_type'] as string;
+        const value = msg.payload['value'] as number;
+        if (value > 0.7) {
+          console.log(`  [SIGNAL] ${agent}: ${signal} = ${value.toFixed(2)}`);
+        }
+        break;
+      }
+
+      default:
+        // Unknown message type — log for debugging
+        if (msg.type.includes(':')) {
+          console.log(`  [${msg.type}] ${JSON.stringify(msg.payload).substring(0, 100)}`);
+        }
+        break;
+    }
+  }
+
+  private handleCapabilitiesScan(): void {
+    console.log('  Running capabilities scan...');
+    const caps = scanCapabilities();
+    this.send('capabilities:result', {
+      capabilities: caps,
+      hostname: caps['hostname'] as string,
+      os: caps['os'] as string,
+      deviceName: this.options.deviceName,
+    });
+    console.log(`  Capabilities reported: ${(caps['tools'] as string[]).length} tools, ${caps['cpu_cores']} cores, ${caps['memory_total_mb']}MB RAM`);
+  }
+
+  /**
+   * Detect execution mode from the input if not explicitly set.
+   * Direct commands (single shell commands, scripts) → shell mode ($0).
+   * Complex reasoning tasks → claude mode (AI).
+   */
+  private detectMode(input: string): ExecutionMode {
+    const trimmed = input.trim();
+    const lower = trimmed.toLowerCase();
+
+    // Explicit shell markers
+    if (lower.startsWith('$ ') || lower.startsWith('> ') || lower.startsWith('cmd:') || lower.startsWith('shell:') || lower.startsWith('ps:') || lower.startsWith('bash:')) {
+      return 'shell';
+    }
+
+    // Common direct commands — no AI needed
+    const shellPatterns = [
+      /^(dir|ls|pwd|cd|echo|cat|type|mkdir|rmdir|del|rm|cp|mv|copy|move|ren)\b/i,
+      /^(hostname|whoami|ipconfig|ifconfig|ping|nslookup|tracert|traceroute|netstat|curl|wget)\b/i,
+      /^(systeminfo|tasklist|taskkill|sc |net |wmic|schtasks)\b/i,
+      /^(docker |docker-compose |kubectl |git |npm |node |python|pip |go |cargo )\b/i,
+      /^(Get-|Set-|New-|Remove-|Start-|Stop-|Restart-|Invoke-|Test-|Select-|Where-|Sort-|Format-)/i,
+      /^(chmod|chown|grep|find|awk|sed|tar|gzip|unzip|ssh|scp|rsync)\b/i,
+      /^(apt|apt-get|yum|dnf|brew|pacman|snap)\b/i,
+      /^(systemctl|journalctl|service |crontab)\b/i,
+    ];
+    if (shellPatterns.some(p => p.test(trimmed))) {
+      return 'shell';
+    }
+
+    // Multi-line scripts
+    if (trimmed.includes('\n') && (lower.startsWith('#!') || lower.startsWith('@echo'))) {
+      return 'shell';
+    }
+
+    // Everything else needs AI reasoning
+    return 'claude';
+  }
+
+  private async handleTask(task: TaskPayload): Promise<void> {
+    console.log(`  [${new Date().toISOString()}] Task received: ${task.agentName} (${task.executionId})`);
+    console.log(`  Input: ${task.input.substring(0, 100)}${task.input.length > 100 ? '...' : ''}`);
+
+    // Acknowledge receipt
+    this.send('execution:accepted', { executionId: task.executionId });
+
+    // Write OAuth credentials if provided (so Claude CLI can auth on this device)
+    if (task.credentials) {
+      try {
+        const { mkdirSync, writeFileSync } = await import('fs');
+        const { join } = await import('path');
+        const { homedir } = await import('os');
+        const claudeDir = join(homedir(), '.claude');
+        mkdirSync(claudeDir, { recursive: true });
+        writeFileSync(join(claudeDir, '.credentials.json'), task.credentials, { mode: 0o600 });
+        console.log('  OAuth credentials synced from server');
+      } catch (err) {
+        console.warn(`  Failed to write credentials: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
+    // Determine execution mode
+    const mode = task.mode || this.detectMode(task.input);
+    const claudePath = mode !== 'shell' ? this.findClaude() : null;
+    const useShell = mode === 'shell' || (mode === 'auto' && !claudePath) || (mode === 'claude' && !claudePath);
+
+    // Strip shell prefix markers if present
+    let input = task.input;
+    if (/^(cmd:|shell:|ps:|bash:|\$ |> )/i.test(input)) {
+      input = input.replace(/^(cmd:|shell:|ps:|bash:|\$ |> )/i, '').trim();
+    }
+
+    console.log(`  Mode: ${useShell ? 'shell' : 'claude'}${task.mode ? ` (explicit: ${task.mode})` : ` (detected)`}`);
+
+    if (!useShell && claudePath) {
+      // AI execution via Claude CLI
+      const args = [
+        '--print',
+        '--output-format', 'json',
+        '--dangerously-skip-permissions',
+      ];
+
+      if (task.maxTurns) {
+        args.push('--max-turns', String(task.maxTurns));
+      }
+      if (task.maxBudget) {
+        args.push('--max-budget-usd', String(task.maxBudget));
+      }
+
+      try {
+        const result = await this.runClaude(claudePath, args, task.executionId, input);
+        this.send('execution:complete', {
+          executionId: task.executionId,
+          output: result.output,
+          tokensIn: result.tokensIn,
+          tokensOut: result.tokensOut,
+          cost: result.cost,
+        });
+        console.log(`  Claude task completed: ${task.executionId} ($${result.cost.toFixed(4)})`);
+        // Emit success signal to nervous system
+        this.emitSignal('success', 1.0, `Completed ${task.agentName} task ($${result.cost.toFixed(4)})`);
+        if (result.cost > 0.5) this.emitSignal('urgency', Math.min(result.cost, 1), `High cost: $${result.cost.toFixed(4)}`);
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        this.send('execution:failed', { executionId: task.executionId, error: errorMsg });
+        console.error(`  Claude task failed: ${task.executionId} — ${errorMsg}`);
+        // Emit failure signal
+        this.emitSignal('stuck', 0.8, `Failed: ${errorMsg.substring(0, 80)}`);
+      } finally {
+        this.activeExecution = null;
+      }
+    } else {
+      // Direct shell execution — $0 cost
+      console.log(`  Executing via ${process.platform === 'win32' ? 'PowerShell' : 'bash'}`);
+      try {
+        const result = await this.runShell(input, task.executionId);
+        this.send('execution:complete', {
+          executionId: task.executionId,
+          output: result,
+          tokensIn: 0,
+          tokensOut: 0,
+          cost: 0,
+        });
+        console.log(`  Shell task completed: ${task.executionId} ($0.00)`);
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        this.send('execution:failed', { executionId: task.executionId, error: errorMsg });
+        console.error(`  Shell task failed: ${task.executionId} — ${errorMsg}`);
+      } finally {
+        this.activeExecution = null;
+      }
+    }
+  }
+
+  private handleCancel(executionId: string): void {
+    if (this.activeExecution?.id === executionId) {
+      console.log(`  Cancelling task ${executionId}`);
+      this.activeExecution.process.kill('SIGTERM');
+      this.activeExecution = null;
+    }
+  }
+
+  private runShell(command: string, executionId: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const isWin = process.platform === 'win32';
+      const shell = isWin ? 'powershell.exe' : '/bin/bash';
+      // Command execution is intentional — agent receives authorized tasks from the server
+      // lgtm[js/command-line-injection]
+      const shellArgs = isWin ? ['-NoProfile', '-NonInteractive', '-Command', command] : ['-c', command];
+
+      const proc = spawn(shell, shellArgs, { // lgtm[js/command-line-injection]
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 300_000, // 5 min max for shell commands
+        env: { ...process.env },
+      });
+
+      this.activeExecution = { id: executionId, process: proc };
+
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout?.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString();
+        this.send('execution:progress', { executionId, progress: stdout.length });
+      });
+
+      proc.stderr?.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+
+      proc.on('close', (code) => {
+        const output = stdout || stderr;
+        if (code === 0 || stdout.length > 0) {
+          resolve(output);
+        } else {
+          reject(new Error(stderr || `Shell exited with code ${code}`));
+        }
+      });
+
+      proc.on('error', (err) => {
+        reject(new Error(`Failed to spawn shell: ${err.message}`));
+      });
+    });
+  }
+
+  private findClaude(): string | null {
+    const cmd = process.platform === 'win32' ? 'where claude' : 'which claude';
+    try {
+      const result = execSync(cmd, { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      return result.split('\n')[0] || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private runClaude(
+    claudePath: string,
+    args: string[],
+    executionId: string,
+    stdinPrompt?: string,
+  ): Promise<{ output: string; tokensIn: number; tokensOut: number; cost: number }> {
+    return new Promise((resolve, reject) => {
+      const proc = spawn(claudePath, args, {
+        stdio: [stdinPrompt ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+        timeout: 600_000, // 10 min max
+        env: { ...process.env },
+        shell: process.platform === 'win32', // Windows needs shell:true for .cmd files
+      });
+
+      // Write prompt via stdin and close (avoids shell quoting issues on Windows)
+      if (stdinPrompt && proc.stdin) {
+        proc.stdin.write(stdinPrompt);
+        proc.stdin.end();
+      }
+
+      this.activeExecution = { id: executionId, process: proc };
+
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout?.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString();
+        // Send progress update
+        this.send('execution:progress', {
+          executionId,
+          progress: stdout.length,
+        });
+      });
+
+      proc.stderr?.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+
+      proc.on('close', (code) => {
+        if (code === null || code !== 0) {
+          // Try to parse JSON error from stdout
+          try {
+            const parsed = JSON.parse(stdout);
+            if (parsed.error) {
+              return reject(new Error(parsed.error));
+            }
+          } catch { /* not JSON */ }
+          return reject(new Error(stderr || `CLI exited with code ${code}`));
+        }
+
+        // Parse JSON output
+        try {
+          const lines = stdout.trim().split('\n');
+          let output = '';
+          let tokensIn = 0;
+          let tokensOut = 0;
+          let cost = 0;
+
+          for (const line of lines) {
+            try {
+              const parsed = JSON.parse(line);
+              if (parsed.type === 'result') {
+                output = parsed.result || '';
+                tokensIn = parsed.input_tokens || 0;
+                tokensOut = parsed.output_tokens || 0;
+                cost = parsed.total_cost_usd || parsed.cost || 0;
+              } else if (parsed.type === 'assistant' && parsed.message) {
+                // Streaming message — accumulate as output
+                if (!output) output = '';
+                const textBlocks = (parsed.message.content || [])
+                  .filter((b: { type: string }) => b.type === 'text')
+                  .map((b: { text: string }) => b.text);
+                output += textBlocks.join('');
+              }
+            } catch { /* skip non-JSON lines */ }
+          }
+
+          resolve({ output: output || stdout, tokensIn, tokensOut, cost });
+        } catch {
+          resolve({ output: stdout, tokensIn: 0, tokensOut: 0, cost: 0 });
+        }
+      });
+
+      proc.on('error', (err) => {
+        reject(new Error(`Failed to spawn claude: ${err.message}`));
+      });
+    });
+  }
+
+  /**
+   * Emit a signal to the fleet's nervous system.
+   */
+  private emitSignal(signalType: string, value: number, context: string = ''): void {
+    this.send('signal:emit', {
+      deviceName: this.options.deviceName,
+      signalType,
+      value: Math.max(0, Math.min(1, value)),
+      context,
+    });
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      const memUsage = process.memoryUsage();
+      this.send('device:heartbeat', {
+        deviceName: this.options.deviceName,
+        hostname: this.options.hostname,
+        os: this.options.os,
+        load: this.activeExecution ? 1 : 0,
+        activeExecutions: this.activeExecution ? 1 : 0,
+        memoryMb: Math.round(memUsage.rss / 1024 / 1024),
+        uptime: Math.round(process.uptime()),
+      });
+    }, this.options.heartbeatInterval);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) return;
+    this.reconnectAttempt++;
+    // Exponential backoff: 2s, 4s, 8s, 16s, max 60s
+    const delay = Math.min(2000 * Math.pow(2, this.reconnectAttempt - 1), 60_000);
+    console.log(`  Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${this.reconnectAttempt})...`);
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      try {
+        await this.connect();
+      } catch (err) {
+        console.error(`  Reconnect failed: ${err instanceof Error ? err.message : err}`);
+        this.scheduleReconnect();
+      }
+    }, delay);
+  }
+}
