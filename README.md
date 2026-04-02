@@ -129,7 +129,7 @@ await bridge.connect();
 
 - Node.js 22+
 - [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) for AI execution (`npm i -g @anthropic-ai/claude-code`)
-- An AskAlf instance (`curl -fsSL https://get.askalf.org | bash`)
+- An AskAlf instance (`npx create-askalf` or `curl -fsSL https://get.askalf.org | bash`)
 
 ## Links
 
