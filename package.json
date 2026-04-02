@@ -1,6 +1,6 @@
 {
   "name": "@askalf/agent",
-  "version": "2.9.9",
+  "version": "2.9.10",
   "description": "Connect any device to a self-healing AI fleet. Nervous system signals, immune system alerts, auto-reconnect, capabilities scan. One command to install as a persistent service.",
   "type": "module",
   "main": "dist/index.js",
@@ -16,7 +16,24 @@
     "dist",
     "README.md"
   ],
-  "keywords": ["askalf", "agent", "cli", "ai", "autonomous", "workforce", "self-hosted", "multi-agent", "orchestration", "automation", "typescript", "claude", "ollama", "mcp", "security", "encryption"],
+  "keywords": [
+    "askalf",
+    "agent",
+    "cli",
+    "ai",
+    "autonomous",
+    "workforce",
+    "self-hosted",
+    "multi-agent",
+    "orchestration",
+    "automation",
+    "typescript",
+    "claude",
+    "ollama",
+    "mcp",
+    "security",
+    "encryption"
+  ],
   "author": "askalf <support@askalf.org> (https://askalf.org)",
   "license": "MIT",
   "repository": {
